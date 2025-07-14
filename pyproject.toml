@@ -1,0 +1,7 @@
+[project]
+name = "703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-predicting-patient-admission"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12.8"
+dependencies = []

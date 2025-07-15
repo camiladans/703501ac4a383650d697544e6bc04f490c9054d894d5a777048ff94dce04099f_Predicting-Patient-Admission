@@ -1,4 +1,4 @@
-from src.pre_processing import load_and_preprocess_data
+from data_preprocessing import load_and_preprocess_data
 
 def main():
     print("Hello from 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-predicting-patient-admission!")

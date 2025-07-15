@@ -67,7 +67,7 @@ def load_and_preprocess_data(path):
     # Encode SEX column
     df = pd.get_dummies(df, columns=['SEX'], drop_first=True)
 
-    # Separate features and target 
+    # Separate features and target
     y = df['SOURCE']  # Replace with your actual target column
     X = df.drop(columns=['SOURCE'])
 

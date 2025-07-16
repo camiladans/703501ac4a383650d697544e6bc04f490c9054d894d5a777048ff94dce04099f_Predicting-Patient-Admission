@@ -3,16 +3,18 @@ Predicting Patient Admission
 
 # Predicting Patient Admission
 
+## Project Overview
+This project aims to build a machine learning classification model to predict whether a patient will be admitted as an inpatient ("IN") or not ("OUT") based on routine laboratory test results. The goal is to assist hospitals in early triage by identifying potential inpatients from lab results alone. We prioritized recall of inpatients to minimize the risk of false negatives, which in a clinical setting could lead to critical delays in care.
+
 ## Folder Structure
 	|── data/
 	│ ├── raw/ # Original .xlsx input files
-	│ └── processed/ # Cleaned data
 	├── models/ # Trained model outputs
 	├── reports/ # Evaluation metrics (e.g., accuracy)
 	├── src/ # Modular code by ML lifecycle
 	├── main.py # Entrypoint script
 
-This folder structure keeps raw data separate from processed outputs. All codes are in the src folder with separate folders for the trained model output and reports to help organize and make results reproducible and easy to manage.
+This folder structure keeps data in data/raw folder. All codes are in the src folder with separate folders for the trained model output and reports to help organize and make results reproducible and easy to manage.
 
 ## Setup Instructions
 1- Install pyenv
@@ -85,3 +87,9 @@ How to use the Pre-commit?
 	bash:
 	pre-commit install
 	pre-commit run --all-files
+
+## Reflection
+
+One major challenge I encountered was related to environment and code organization. Since the project used uv for dependency management, I initially tried uv add to include packages, but some installations failed. I had to fall back to using uv pip install and then manually update the pyproject.toml file to reflect the changes.
+
+Another tricky issue was adapting to a modular ML project layout, where each pipeline stage is in a separate script. This made it harder to debug variable flow and track data transformations. Additionally, pre-commit formatting occasionally introduced inconsistent tab/space indentation, which led to errors like IndentationError: unindent does not match any outer indentation level. I had to manually fix these formatting issues and double-check indentation across all files.

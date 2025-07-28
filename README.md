@@ -7,14 +7,30 @@ Predicting Patient Admission
 This project aims to build a machine learning classification model to predict whether a patient will be admitted as an inpatient ("IN") or not ("OUT") based on routine laboratory test results. The goal is to assist hospitals in early triage by identifying potential inpatients from lab results alone. We prioritized recall of inpatients to minimize the risk of false negatives, which in a clinical setting could lead to critical delays in care.
 
 ## Folder Structure
+	├── deploy/					 # Scripts for orchestrating deployment
+	│   ├── docker/              # Dockerfiles and build artifacts
+	│   ├── airflow/			 # Specific Airflow container setup
+	│   │   ├── dags/            # Contains Airflow DAG scripts that define the ML workflow
+	│   │   └── logs/            # Holds log outputs from Airflow tasks
+	│   └── config/              # Airflow scheduler and deployment configs
 	|── data/
 	│ ├── raw/ # Original .xlsx input files
 	├── models/ # Trained model outputs
 	├── reports/ # Evaluation metrics (e.g., accuracy)
 	├── src/ # Modular code by ML lifecycle
 	├── main.py # Entrypoint script
+	├── docker-compose.yml		 # Defines services like Airflow scheduler, webserver, and Postgres DB
+
 
 This folder structure keeps data in data/raw folder. All codes are in the src folder with separate folders for the trained model output and reports to help organize and make results reproducible and easy to manage.
+
+Isolating DAGs in `deploy/airflow/dags/` ensures modularity, allowing independent testing of workflow tasks without affecting the core ML code in `src/`. The separation of `docker/` and `config/` improves maintainability and scalability of deployment pipelines.
+
+
+
+
+This modular structure supports containerized and orchestrated workflows by isolating DAGs and build logic from core ML code, ensuring maintainability and scalability.
+
 
 ## Setup Instructions
 1- Install pyenv
@@ -65,6 +81,13 @@ This folder structure keeps data in data/raw folder. All codes are in the src fo
 	numpy pandas matplotlib seaborn tqdm \
 	scikit-learn xgboost imbalanced-learn \
 	pre-commit
+
+## How to setup Docker and Airflow
+
+1- Download and install Docker desktop
+Reference: https://www.docker.com/
+
+2- Download airflow docker compose file and save to the project
 
 ## Pre-Commit Configuration
 The pre-commit hooks help enforce PEP 8 by using ruff, which checks code against PEP 8 standards and common linting issues. Additionally, end-of-file-fixer and trailing-whitespace ensure clean formatting by enforcing newline rules and removing unnecessary whitespace, both of which align with PEP 8 guidelines.

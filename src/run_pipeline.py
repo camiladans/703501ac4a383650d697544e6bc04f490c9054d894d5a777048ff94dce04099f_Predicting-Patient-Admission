@@ -26,7 +26,7 @@ def main():
     save_model(model, "models/model.pkl")
 
     # Evaluate model
-    evaluate_model(model, test_data, report_path="reports/metrics.txt", shap_path="reports/shap_summary.html")
+    evaluate_model(model, test_data, report_path="reports/metrics.txt")
 
     print("SUCCESS! - Pipeline completed.")
 

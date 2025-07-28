@@ -3,10 +3,10 @@ Main pipeline script for predicting inpatient vs. outpatient status.
 Performs data loading, preprocessing, training, evaluation, and SHAP explainability.
 """
 
-from src.data_preprocessing import preprocess_data
-from src.feature_engineering import engineer_features
-from src.model_training import train_model, save_model
-from src.evaluation import evaluate_model
+from data_preprocessing import preprocess_data
+from feature_engineering import engineer_features
+from model_training import train_model, save_model
+from evaluation import evaluate_model
 
 def main():
     print("Hello from 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-predicting-patient-admission!")

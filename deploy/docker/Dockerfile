@@ -1,25 +1,25 @@
-# Base image
 FROM python:3.12-slim
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y curl && apt-get clean
+# Install curl and pipx (to install uv securely)
+RUN apt-get update && apt-get install -y curl pipx && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN pipx install uv && pipx ensurepath
 
-# Install uv (faster dependency resolver)
-RUN curl -Ls https://astral.sh/uv/install.sh | sh
-
-# Set work directory
+# Set workdir
 WORKDIR /app
 
-# Copy pyproject + lock file and install dependencies
+# Copy pyproject files
 COPY pyproject.toml uv.lock ./
-RUN uv pip install -r <(uv pip compile pyproject.toml)
 
-# Copy source code
+# # Install dependencies using uv via pipx
+# RUN /root/.local/bin/uv pip install --system --no-cache --requirement <(/root/.local/bin/uv pip compile pyproject.toml)
+
+# Install dependencies using uv via pipx
+RUN sh -c "/root/.local/bin/uv pip compile pyproject.toml -o /tmp/req.txt && /root/.local/bin/uv pip install --system --requirement /tmp/req.txt"
+
+# Copy your source code
 COPY src/ ./src/
 
-# Run the pipeline
 ENTRYPOINT ["python", "src/run_pipeline.py"]

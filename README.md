@@ -148,7 +148,99 @@ From the project root, run:
 ```bash
 docker build -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline -f deploy/docker/Dockerfile .
 
-## Reflection
+## Airflow Orchestration
+
+This project uses Apache Airflow to orchestrate the ML pipeline. Tasks like preprocessing, feature engineering, model training, and evaluation are defined as `PythonOperator` steps in a DAG.
+
+**DAG File**: `deploy/airflow/dags/ml_pipeline_dag.py`
+**Schedule**: Manually triggered (`schedule_interval=None`)
+
+### DAG Structure
+
+1. `preprocess`: Reads and splits the data
+2. `engineer`: Performs feature engineering
+3. `train`: Trains and saves the model
+4. `evaluate`: Generates evaluation metrics and saves outputs
+
+Task dependencies are defined sequentially. The DAG can be triggered in the Airflow UI at [http://localhost:8080](http://localhost:8080).
+
+---
+
+## Docker Integration
+
+### Dockerfile Strategy
+
+- Uses `python:3.12-slim` as a minimal base image.
+- Installs dependencies using `uv` (via `pipx`) for deterministic builds.
+- Reads from `pyproject.toml` and `uv.lock`.
+- Mounts `src/`, `data/`, and `models/` via volumes to persist across containers.
+
+### Build the Docker Image
+
+```bash
+docker build -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline -f deploy/docker/Dockerfile .
+```
+
+---
+
+## Running Airflow with Docker
+
+1. Start the environment:
+
+```bash
+docker compose up --build
+```
+
+2. Access Airflow UI:
+
+```
+http://localhost:8080
+```
+
+3. Trigger the DAG manually in the UI, or test individual tasks:
+
+```bash
+docker compose exec airflow-webserver airflow tasks test ml_pipeline_dag preprocess 2025-01-01
+```
+
+4. Logs will appear in: `deploy/airflow/logs/`
+
+---
+
+## Docker Compose Volumes
+
+Example volume configuration in `docker-compose.yml`:
+
+```yaml
+volumes:
+  - ./deploy/airflow/dags:/opt/airflow/dags
+  - ./deploy/airflow/logs:/opt/airflow/logs
+  - ./deploy/airflow/plugins:/opt/airflow/plugins
+  - ./src:/app/src
+  - ./data:/app/data
+  - ./models:/app/models
+  - ./reports:/app/reports
+```
+
+---
+
+## Pre-Commit Hooks for Docker and Airflow
+
+To improve code quality and container security, additional pre-commit hooks have been added.
+
+### New Hooks
+
+- `hadolint`: Lints `Dockerfile` for best practices and common issues like using `root`, missing `CMD`, or insecure `apt` usage.
+- `yamllint`: Checks formatting and syntax for YAML files like `docker-compose.yml`.
+
+### Usage
+
+```bash
+pre-commit install
+pre-commit run --all-files
+```
+
+## Reflection: HW1
 
 One major challenge I encountered was related to environment and code organization. Since the project used uv for dependency management, I initially tried uv add to include packages, but some installations failed. I had to fall back to using uv pip install and then manually update the pyproject.toml file to reflect the changes.
 

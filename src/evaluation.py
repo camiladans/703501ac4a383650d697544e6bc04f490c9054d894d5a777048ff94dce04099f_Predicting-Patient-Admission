@@ -8,7 +8,7 @@ Generates SHAP and confusion matrix visualizations.
 
 import pandas as pd
 import joblib
-import shap
+# import shap
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -26,7 +26,7 @@ def evaluate_model(
     model,
     test_data: pd.DataFrame,
     report_path: str = "reports/metrics.txt",
-    shap_path: str = "reports/shap_summary.html"
+    # shap_path: str = "reports/shap_summary.html"
 ):
     """
     Evaluates model performance on test data and saves metrics and visualizations.
@@ -86,17 +86,17 @@ def evaluate_model(
     plt.close()
     print("Confusion matrix saved to: reports/confusion_matrix.png")
 
-    # SHAP force plot
-    try:
-        explainer = shap.Explainer(model, X_test)
-        shap_values = explainer(X_test)
-        shap_html = shap.plots.force(shap_values[0], matplotlib=False)
-        with open(shap_path, "w") as f:
-            f.write(shap.getjs())
-            f.write(shap_html.html())
-        print(f"SHAP summary saved to: {shap_path}")
-    except Exception as e:
-        print(f"⚠️ SHAP explanation failed: {str(e)}")
+    # # SHAP force plot
+    # try:
+    #     explainer = shap.Explainer(model, X_test)
+    #     shap_values = explainer(X_test)
+    #     shap_html = shap.plots.force(shap_values[0], matplotlib=False)
+    #     with open(shap_path, "w") as f:
+    #         f.write(shap.getjs())
+    #         f.write(shap_html.html())
+    #     print(f"SHAP summary saved to: {shap_path}")
+    # except Exception as e:
+    #     print(f"⚠️ SHAP explanation failed: {str(e)}")
 
     return {
         "accuracy": acc,

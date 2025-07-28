@@ -1,0 +1,27 @@
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Ignore Jupyter/IPython artifacts
+.ipynb_checkpoints/
+
+# Ignore data, models, and reports (mounted at runtime instead)
+data/
+models/
+reports/
+
+# Ignore virtual environment
+.venv/
+
+# Ignore system and editor files
+.DS_Store
+.env
+*.log
+
+# Git and version control
+.git/
+.gitignore
+
+# Ignore the .dockerignore file itself? (Optional)
+# .dockerignore

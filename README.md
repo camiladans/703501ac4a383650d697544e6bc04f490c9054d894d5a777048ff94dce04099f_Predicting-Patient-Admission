@@ -111,6 +111,43 @@ How to use the Pre-commit?
 	pre-commit install
 	pre-commit run --all-files
 
+## .dockerignore Configuration
+
+To improve Docker build performance and prevent unnecessary files from being copied into the container, we’ve added a `.dockerignore` file to the project root.
+
+### Purpose
+This file ensures that large or sensitive files—such as local data, virtual environments, system artifacts, and Git history—are excluded from the Docker build context.
+
+### Excluded Files and Folders
+
+- Python cache files: `__pycache__/`, `*.pyc`, `*.pyo`, `*.egg-info/`
+- Jupyter artifacts: `.ipynb_checkpoints/`
+- Data directories (mounted at runtime): `data/`, `models/`, `reports/`
+- Virtual environments: `.venv/`
+- System/editor files: `.DS_Store`, `.env`, `*.log`
+- Git metadata: `.git/`, `.gitignore`
+
+Keeping the Docker image clean helps reduce build time, improves security, and avoids bloated containers.
+
+## 🐳 Docker Setup
+
+This project includes a Docker setup to ensure reproducible, environment-agnostic execution of the ML pipeline.
+
+### Dockerfile Overview
+
+- **Base Image**: Uses `python:3.12-slim` for a minimal, fast Python runtime.
+- **Dependency Management**: Installs Python packages using `uv` for fast, deterministic builds via `pyproject.toml`.
+- **Working Directory**: Set to `/app` to isolate pipeline code.
+- **Source Code**: Copies all pipeline scripts from the `src/` directory.
+- **Entrypoint**: Runs `src/run_pipeline.py` automatically when the container starts.
+
+### Building the Image
+
+From the project root, run:
+
+```bash
+docker build -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline -f deploy/docker/Dockerfile .
+
 ## Reflection
 
 One major challenge I encountered was related to environment and code organization. Since the project used uv for dependency management, I initially tried uv add to include packages, but some installations failed. I had to fall back to using uv pip install and then manually update the pyproject.toml file to reflect the changes.

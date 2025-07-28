@@ -73,10 +73,17 @@ x-airflow-common:
     # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
   volumes:
-    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
-    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
-    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/plugins:/opt/airflow/plugins
+
+    # 👇 Mount your source code and runtime folders
+    - ${AIRFLOW_PROJ_DIR:-.}/src:/app/src
+    - ${AIRFLOW_PROJ_DIR:-.}/data:/app/data
+    - ${AIRFLOW_PROJ_DIR:-.}/models:/app/models
+    - ${AIRFLOW_PROJ_DIR:-.}/reports:/app/reports
+
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -133,6 +140,7 @@ services:
         condition: service_completed_successfully
 
   airflow-scheduler:
+    image: 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline
     <<: *airflow-common
     command: scheduler
     healthcheck:
@@ -148,6 +156,7 @@ services:
         condition: service_completed_successfully
 
   airflow-dag-processor:
+    image: 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline
     <<: *airflow-common
     command: dag-processor
     healthcheck:
@@ -188,6 +197,7 @@ services:
   #       condition: service_completed_successfully
 
   airflow-triggerer:
+    image: 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline
     <<: *airflow-common
     command: triggerer
     healthcheck:
@@ -295,6 +305,7 @@ services:
     user: "0:0"
 
   airflow-cli:
+    image: 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline
     <<: *airflow-common
     profiles:
       - debug

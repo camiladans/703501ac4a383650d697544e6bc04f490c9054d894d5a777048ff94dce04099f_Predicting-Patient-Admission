@@ -25,7 +25,7 @@ from sklearn.metrics import (
 def evaluate_model(
     model,
     test_data: pd.DataFrame,
-    report_path: str = "reports/metrics.txt",
+    report_path: str = "reports/metrics.txt"
     # shap_path: str = "reports/shap_summary.html"
 ):
     """

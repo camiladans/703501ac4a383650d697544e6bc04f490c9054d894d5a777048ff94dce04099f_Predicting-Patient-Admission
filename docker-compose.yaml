@@ -49,7 +49,7 @@ x-airflow-common:
   &airflow-common
   build:
     context: .
-    dockerfile: deploy/docker/Dockerfile  # builds full image (Stage 1 and 2)
+    dockerfile: deploy/docker/Dockerfile.airflow  # builds full image (Stage 1 and 2)
   image: custom-airflow:runtime
 
   # In order to add custom dependencies or upgrade provider distributions you can use your extended image.
@@ -132,7 +132,7 @@ services:
 
   airflow-apiserver:
     <<: *airflow-common
-    command: api-server
+    command: airflow api-server
     ports:
       - "8080:8080"
     healthcheck:

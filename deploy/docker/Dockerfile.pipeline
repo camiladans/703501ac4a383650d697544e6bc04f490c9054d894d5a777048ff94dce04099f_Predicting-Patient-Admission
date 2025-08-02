@@ -56,7 +56,7 @@
 
 # ENTRYPOINT ["python", "src/run_pipeline.py"]
 
-# ONE-STAGE BUILD
+# UPDATED STAGE 1
 FROM apache/airflow:3.0.3
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -73,4 +73,6 @@ RUN /root/.local/bin/uv pip compile pyproject.toml -o requirements.txt && \
 
 COPY src/ ./src/
 
-ENTRYPOINT ["python", "src/run_pipeline.py"]
+# Set as default runtime pipeline container
+# ENTRYPOINT ["python", "src/run_pipeline.py"]
+CMD ["python", "src/run_pipeline.py"]

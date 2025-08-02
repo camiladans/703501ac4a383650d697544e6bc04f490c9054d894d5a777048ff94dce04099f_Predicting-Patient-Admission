@@ -14,30 +14,34 @@ Docker ensures environment consistency with immutable infrastructure, while Airf
 ├── deploy/
 │   ├── docker/               # Dockerfile and build logic
 │   ├── airflow/
+│   │   ├── config/           # Deployment configs
 │   │   ├── dags/             # Airflow DAG definitions
 │   │   ├── logs/             # Airflow task logs
-│   └── config/               # Deployment configs
+│   │   ├── plugins/
+│   └── config/
 ├── data/                     # Raw and processed input files
 ├── models/                   # Trained model outputs
 ├── reports/                  # Evaluation results
 ├── src/                      # Modular ML pipeline code
 ├── docker-compose.yml        # Airflow + Docker orchestration
-├── main.py                   # (Optional) Entrypoint for direct execution
+
 ```
 
 ---
 
 ## Setup Instructions
 
-### Local Python + `uv` Setup
+### Local Python + `uv` Setup (Optional for Development)
+
+If you'd like to run the pipeline locally without Docker:
 
 ```bash
-# 1. Install pyenv and Python 3.12.8
+# 1. Install Python 3.12.8 via pyenv
 curl https://pyenv.run | bash
 pyenv install 3.12.8
 pyenv local 3.12.8
 
-# 2. Create virtualenv and activate
+# 2. Create and activate virtual environment
 python -m venv .venv
 source .venv/bin/activate
 
@@ -46,9 +50,8 @@ python3 -m pip install --user pipx
 python3 -m pipx ensurepath
 pipx install uv
 
-# 4. Initialize and install dependencies
-uv pip install numpy pandas scikit-learn seaborn matplotlib pre-commit
-```
+# 4. Install dependencies from pyproject.toml + uv.lock
+uv pip install --system
 
 ---
 
@@ -56,10 +59,20 @@ uv pip install numpy pandas scikit-learn seaborn matplotlib pre-commit
 
 This project uses Docker to containerize the ML pipeline, ensuring repeatable and isolated execution.
 
-### Build the Image
+### Build the Docker Image
 
 ```bash
-docker build -t patient-admission-pipeline -f deploy/docker/Dockerfile .
+docker build -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline -f deploy/docker/Dockerfile .
+```
+
+### Run the Pipeline Standalone (Directly via Docker)
+
+```bash
+docker run --rm \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/models:/app/models \
+  -v $(pwd)/reports:/app/reports \
+  703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline
 ```
 
 ---

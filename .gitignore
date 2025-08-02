@@ -180,3 +180,8 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 reports/
+data/test_feat.pkl
+data/test.pkl
+data/train_feat.pkl
+data/train.pkl
+models/model.pkl

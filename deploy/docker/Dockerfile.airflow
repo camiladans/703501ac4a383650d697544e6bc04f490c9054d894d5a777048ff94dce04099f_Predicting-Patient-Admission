@@ -1,22 +1,9 @@
-# Use your custom image with dependencies and src/
-# FROM custom-airflow:runtime
-# FROM 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline
-
-# # Unset the hardcoded pipeline entrypoint
-# ENTRYPOINT []
-
-# # Optional: set default command
-# CMD ["airflow", "webserver"]
-
-# ENTRYPOINT ["/usr/bin/dumb-init", "--", "entrypoint"]
-# CMD ["webserver"]
-
-
 # --- STAGE 2: Airflow Runtime built on ML Pipeline ---
+# Base image: uses the ML pipeline image with all code and dependencies pre-installed
 FROM 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline
 
-# Use Airflow’s built-in entrypoint
+# Use Airflow’s default entrypoint script
 ENTRYPOINT ["/entrypoint"]
 
-# Default command (overridden per service in docker-compose)
+# Default command for this container (can be overridden in docker-compose)
 CMD ["webserver"]

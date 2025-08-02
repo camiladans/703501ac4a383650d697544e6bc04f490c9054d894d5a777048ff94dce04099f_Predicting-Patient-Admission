@@ -71,8 +71,18 @@ http://localhost:8080
 **Username**: airflow
 **Password**: airflow
 
-- Airflow DAG Overview
-The DAG is defined using the @dag decorator in ml_pipeline_dag.py. Each step in the ML pipeline (preprocessing, feature engineering, training, evaluation) is wrapped in an @task to enable modular, trackable execution. Setting **schedule=None means the DAG does not run on a schedule and must be triggered manually** via the Airflow UI.
+
+## Airflow DAG Overview
+The DAG is defined using the @dag decorator in ml_pipeline_dag.py. Each step in the ML pipeline (preprocessing, feature engineering, training, evaluation) is wrapped in an @task to enable modular, trackable execution.
+
+The pipeline consists of four tasks:
+1. `preprocess` - clean and split input data
+2. `engineer` - Generate features for training
+3. `train` - Train and save the classification model
+4. `evaluate` - Generate metrics and visualizations
+
+Setting **schedule=None means the DAG must be triggered manually** via the Airflow UI.
+
 
 ## Running the ML Pipeline in Airflow
 The main DAG is defined in: `deploy/airflow/dags/ml_pipeline_dag.py`
@@ -81,18 +91,13 @@ In the Airflow UI:
 - Enable the DAG named 'ml_pipeline_dag'
 - Click the "Play Button" to trigger the DAG
 
-The pipeline consists of four tasks:
-1. `preprocess` - clean and split input data
-2. `engineer` - Generate features for training
-3. `train` - Train and save the classification model
-4. `evaluate` - Generate metrics and visualizations
-
 Logs will be available at `deploy/airflow/logs/`.
 
 To run a task manually (e.g., preprocess):
 ```bash
 docker compose exec airflow-webserver airflow tasks test ml_pipeline_dag preprocess 2025-01-01
 ```
+
 
 ## Monitoring DAGs in Airflow UI
 The Airflow web interface helps verify that the ML pipeline is running correctly from start to finish. It allows you to:
@@ -101,6 +106,7 @@ The Airflow web interface helps verify that the ML pipeline is running correctly
 - Monitor task statuses (e.g., success, failed, retrying)
 - Access detailed logs for debugging
 - Visualize task dependencies and schedules
+
 
 ## Optional: Local Development without Docker
 You can run the ML pipeline outside of Docker for faster debugging and testing.

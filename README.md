@@ -33,26 +33,33 @@ Docker ensures environment consistency with immutable infrastructure, while Airf
 
 ### Local Python + `uv` Setup (Optional for Development)
 
-If you'd like to run the pipeline locally without Docker:
+To run the pipeline locally without Docker:
 
+### 1. Install Python 3.12.8 via pyenv
 ```bash
-# 1. Install Python 3.12.8 via pyenv
 curl https://pyenv.run | bash
 pyenv install 3.12.8
 pyenv local 3.12.8
+```
 
-# 2. Create and activate virtual environment
+### 2. Create and activate virtual environment
+```bash
 python -m venv .venv
 source .venv/bin/activate
+```
 
-# 3. Install uv via pipx
+### 3. Install uv via pipx
+```bash
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
+exec $SHELL  # reload shell so 'uv' is on PATH
 pipx install uv
+```
 
-# 4. Install dependencies from pyproject.toml + uv.lock
+### 4. Install dependencies from pyproject.toml + uv.lock
+```bash
 uv pip install --system
-
+```
 ---
 
 ## Docker Setup
@@ -77,34 +84,35 @@ docker run --rm \
 
 ---
 
-## Airflow Orchestration
+## Airflow Orchestration (via Docker Compose)
 
-Apache Airflow runs the ML pipeline through a defined DAG.
+This project uses Apache Airflow to orchestrate the ML pipeline through modular DAG tasks. Airflow allows for better task tracking, retries, and scalable pipeline management.
 
-- **DAG file**: `deploy/airflow/dags/ml_pipeline_dag.py`
-- **Trigger**: Manual (no schedule interval)
-
-### DAG Tasks
-
-1. `preprocess`: Clean and split data
-2. `engineer`: Feature generation
-3. `train`: Model training and save
-4. `evaluate`: Metrics and visualizations
-
-Run Airflow:
-
+### Start Airflow Locally
 ```bash
 docker compose up --build
 ```
 
-Then access the UI at:
-
-```
+### Then access the Airflow UI at:
+```bash
 http://localhost:8080
 ```
 
-To test a task manually:
+### Login credentials (default):
+- **Username**: airflow
+- **Password**: airflow
 
+### DAG Overview
+The main DAG is defined in: `deploy/airflow/dags/ml_pipeline_dag.py`
+
+It includes the following tasks:
+1. `preprocess`: Clean and split input data
+2. `engineer`: Generate features for training
+3. `train`: Train and save the classification model
+4. `evaluate`: Generate metrics and visualizations
+
+### Manually Test a DAG Task
+To run a task manually within the DAG (e.g., preprocess):
 ```bash
 docker compose exec airflow-webserver airflow tasks test ml_pipeline_dag preprocess 2025-01-01
 ```
@@ -115,7 +123,7 @@ Logs will be available at `deploy/airflow/logs/`.
 
 ## Volume Mapping in Docker Compose
 
-```yaml
+```bash
 volumes:
   - ./deploy/airflow/dags:/opt/airflow/dags
   - ./deploy/airflow/logs:/opt/airflow/logs
@@ -151,7 +159,7 @@ pre-commit run --all-files
 
 To keep images lean and secure:
 
-```
+```bash
 __pycache__/
 *.pyc
 .venv/

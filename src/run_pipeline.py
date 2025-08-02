@@ -13,7 +13,7 @@ def main():
     print("Starting patient admission prediction pipeline...")
 
     # Load and preprocess
-    train_data, test_data = preprocess_data("data/raw/data-ori.xlsx")
+    train_data, test_data = preprocess_data("data/raw/data-ori.csv")
 
     # Feature engineering
     train_data = engineer_features(train_data)

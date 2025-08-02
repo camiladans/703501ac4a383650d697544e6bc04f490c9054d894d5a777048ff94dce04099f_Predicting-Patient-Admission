@@ -1,78 +1,29 @@
-# # --- STAGE 1: Builder (using Airflow base image) ---
-# FROM apache/airflow:3.0.3 AS builder
+# --- STAGE 1: Build ML Pipeline Image (based on Airflow) ---
+# Uses Airflow's base image so the environment matches production orchestration
 
-# ENV PYTHONDONTWRITEBYTECODE=1
-# ENV PYTHONUNBUFFERED=1
-
-# # Install curl and pipx for uv
-# USER root
-# RUN apt-get update && apt-get install -y curl pipx && apt-get clean && rm -rf /var/lib/apt/lists/*
-# RUN pipx install uv && pipx ensurepath
-
-# # Set workdir and copy dependency files
-# WORKDIR /app
-# COPY pyproject.toml uv.lock ./
-
-# # Compile and install dependencies system-wide
-# RUN /root/.local/bin/uv pip compile pyproject.toml -o requirements.txt && \
-#     /root/.local/bin/uv pip install --requirement requirements.txt --system
-
-# # # Compile uv.lock to requirements.txt, then install system-wide
-# # RUN /root/.local/bin/uv pip compile pyproject.toml -o /tmp/requirements.txt && \
-# #     /root/.local/bin/uv pip install --requirement /tmp/requirements.txt --system
-# # RUN /root/.local/bin/uv pip compile pyproject.toml -o /tmp/requirements.txt && \
-# #     /root/.local/bin/uv pip install --system --requirement /tmp/requirements.txt
-
-# # Install all dependencies from pyproject.toml and uv.lock
-# # RUN /root/.local/bin/uv pip install --system
-
-# # --- STAGE 2: Final Runtime (also Airflow base image) ---
-# FROM apache/airflow:3.0.3
-
-# ENV PYTHONDONTWRITEBYTECODE=1
-# ENV PYTHONUNBUFFERED=1
-
-# # # Set workdir
-# # WORKDIR /app
-
-# # # Copy installed dependencies to where Airflow's Python expects them
-# # # COPY --from=builder /root/.local/lib/python3.12/site-packages /home/airflow/.local/lib/python3.12/site-packages
-# # COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-
-# # # Copy application source code
-# # COPY src/ ./src/
-
-# # # Default entrypoint (used for standalone execution – overridden in Airflow containers)
-# # ENTRYPOINT ["python", "src/run_pipeline.py"]
-
-# WORKDIR /app
-
-# # Copy dependencies from builder
-# COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-# COPY --from=builder /usr/local/bin /usr/local/bin
-
-# # Copy your app code
-# COPY src/ ./src/
-
-# ENTRYPOINT ["python", "src/run_pipeline.py"]
-
-# UPDATED STAGE 1
 FROM apache/airflow:3.0.3
 
+# Disable Python cache and enable unbuffered output for cleaner logs
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Switch to root to install OS-level tools
 USER root
+
+# Install curl and pipx (used to install 'uv')
 RUN apt-get update && apt-get install -y curl pipx && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN pipx install uv && pipx ensurepath
 
+# Install uv using pipx for dependency resolution
 WORKDIR /app
+
+# Copy dependency files and install packages using uv
 COPY pyproject.toml uv.lock ./
 RUN /root/.local/bin/uv pip compile pyproject.toml -o requirements.txt && \
     /root/.local/bin/uv pip install --requirement requirements.txt --system
 
+# Copy source code into the container
 COPY src/ ./src/
 
-# Set as default runtime pipeline container
-# ENTRYPOINT ["python", "src/run_pipeline.py"]
+# Default command to run the pipeline (overridden in Airflow container)
 CMD ["python", "src/run_pipeline.py"]

@@ -14,7 +14,7 @@ from evaluation import evaluate_model
 @dag(
     dag_id='ml_pipeline_dag',
     start_date=datetime(2025, 1, 1),
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     tags=['ml'],
 )
@@ -22,7 +22,7 @@ def ml_pipeline():
 
     @task()
     def step_preprocess():
-        train, test = preprocess_data("/app/data/raw/data-ori.xlsx")
+        train, test = preprocess_data("/app/data/raw/data-ori.csv")
         train_path = "/app/data/train.pkl"
         test_path = "/app/data/test.pkl"
         train.to_pickle(train_path)
@@ -56,8 +56,7 @@ def ml_pipeline():
         test = pd.read_pickle(paths["test_feat_path"])
         model = load(model_path)
         evaluate_model(model, test,
-                       report_path="/app/reports/metrics.txt",
-                       shap_path="/app/reports/shap_summary.html")
+                       report_path="/app/reports/metrics.txt")
 
     # Task dependencies
     raw_paths = step_preprocess()

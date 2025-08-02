@@ -3,14 +3,11 @@ Module: evaluation.py
 
 Evaluates a classification model on test data.
 Focuses on inpatient prediction ('IN') using recall and PR AUC.
-Generates SHAP and confusion matrix visualizations.
 """
 
 import pandas as pd
 import joblib
-# import shap
-import matplotlib.pyplot as plt
-import seaborn as sns
+import os
 
 from sklearn.metrics import (
     accuracy_score,
@@ -26,20 +23,21 @@ def evaluate_model(
     model,
     test_data: pd.DataFrame,
     report_path: str = "reports/metrics.txt"
-    # shap_path: str = "reports/shap_summary.html"
 ):
     """
-    Evaluates model performance on test data and saves metrics and visualizations.
+    Evaluates model performance on test data and saves metrics.
 
     Args:
         model: Trained classifier.
         test_data (pd.DataFrame): DataFrame with features and 'SOURCE' target.
         report_path (str): Path to save metrics report.
-        shap_path (str): Path to save SHAP force plot.
 
     Returns:
         dict: Dictionary with evaluation metrics.
     """
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
     if "SOURCE" not in test_data.columns:
         raise KeyError("The column 'SOURCE' is missing from the input DataFrame.")
 
@@ -74,29 +72,6 @@ def evaluate_model(
             f.write(f"PR AUC: {pr_auc:.4f}\n")
 
     print(f"Metrics saved to: {report_path}")
-
-    # Confusion matrix plot
-    plt.figure(figsize=(6, 4))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["OUT", "IN"], yticklabels=["OUT", "IN"])
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    plt.title("Confusion Matrix")
-    plt.tight_layout()
-    plt.savefig("reports/confusion_matrix.png")
-    plt.close()
-    print("Confusion matrix saved to: reports/confusion_matrix.png")
-
-    # # SHAP force plot
-    # try:
-    #     explainer = shap.Explainer(model, X_test)
-    #     shap_values = explainer(X_test)
-    #     shap_html = shap.plots.force(shap_values[0], matplotlib=False)
-    #     with open(shap_path, "w") as f:
-    #         f.write(shap.getjs())
-    #         f.write(shap_html.html())
-    #     print(f"SHAP summary saved to: {shap_path}")
-    # except Exception as e:
-    #     print(f"⚠️ SHAP explanation failed: {str(e)}")
 
     return {
         "accuracy": acc,

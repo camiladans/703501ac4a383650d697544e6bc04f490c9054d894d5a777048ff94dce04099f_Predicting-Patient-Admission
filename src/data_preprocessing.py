@@ -30,7 +30,7 @@ def flag_out_of_range(df):
     return df
 
 def preprocess_data(path: str):
-    df = pd.read_excel(path)
+    df = pd.read_csv(path)
     df = flag_out_of_range(df)
 
     train_data, test_data = train_test_split(df, test_size=0.2, random_state=42)

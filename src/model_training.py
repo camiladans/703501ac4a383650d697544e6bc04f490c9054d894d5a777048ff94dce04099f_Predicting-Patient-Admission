@@ -5,6 +5,7 @@ Trains a classification model (LogReg or RF) on processed data.
 Prioritizes recall for inpatients ('in').
 """
 
+import os
 import pandas as pd
 import joblib
 from sklearn.linear_model import LogisticRegression
@@ -49,5 +50,6 @@ def train_model(train_data: pd.DataFrame, model_type: str = "logreg"):
     return best_model, metrics
 
 def save_model(model, filepath: str = "models/model.pkl"):
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     joblib.dump(model, filepath)
     print(f"Model saved to: {filepath}")

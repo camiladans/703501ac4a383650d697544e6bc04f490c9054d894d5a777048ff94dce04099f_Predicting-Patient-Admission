@@ -4,9 +4,7 @@
 
 This project builds a machine learning classifier to predict patient admission status ("IN" for inpatient, "OUT" otherwise) based on routine lab tests. The goal is to support hospital triage by flagging potential inpatients early, with a focus on maximizing recall to reduce false negatives that could delay care.
 
-Docker makes sure the ML pipeline runs the same way every time by putting everything it needs into a container.
-
-Airflow helps run each step of the pipeline in order. It can restart failed steps, keep track of progress, and manage bigger workflows easily.
+Docker makes sure the ML pipeline runs the same way every time by putting everything it needs like code, libraries, and settings into one container. This avoids issues from different environments. Airflow helps run each step of the pipeline in order. It can restart failed steps, keep track of progress, and handle more complex workflows, making the whole system easier to manage and scale.
 
 ---
 
@@ -73,6 +71,9 @@ http://localhost:8080
 **Username**: airflow
 **Password**: airflow
 
+- Airflow DAG Overview
+The DAG is defined using the @dag decorator in ml_pipeline_dag.py. Each step in the ML pipeline (preprocessing, feature engineering, training, evaluation) is wrapped in an @task to enable modular, trackable execution. Setting **schedule=None means the DAG does not run on a schedule and must be triggered manually** via the Airflow UI.
+
 ## Running the ML Pipeline in Airflow
 The main DAG is defined in: `deploy/airflow/dags/ml_pipeline_dag.py`
 
@@ -92,6 +93,14 @@ To run a task manually (e.g., preprocess):
 ```bash
 docker compose exec airflow-webserver airflow tasks test ml_pipeline_dag preprocess 2025-01-01
 ```
+
+## Monitoring DAGs in Airflow UI
+The Airflow web interface helps verify that the ML pipeline is running correctly from start to finish. It allows you to:
+- View all available DAGs
+- Manually trigger DAG runs
+- Monitor task statuses (e.g., success, failed, retrying)
+- Access detailed logs for debugging
+- Visualize task dependencies and schedules
 
 ## Optional: Local Development without Docker
 You can run the ML pipeline outside of Docker for faster debugging and testing.

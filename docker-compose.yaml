@@ -206,7 +206,7 @@ services:
       context: .
       dockerfile: deploy/docker/Dockerfile.mlflow
     ports:
-      - "5000:5000"
+      - "5050:5000"
     environment:
       MLFLOW_BACKEND_STORE_URI: >-
         postgresql://mlflow:mlflow@postgres-mlflow:5432/mlflow

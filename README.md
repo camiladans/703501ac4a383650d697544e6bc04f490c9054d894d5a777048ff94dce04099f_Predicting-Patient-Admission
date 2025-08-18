@@ -6,11 +6,14 @@ This project builds a machine learning classifier to predict patient admission s
 
 Docker makes sure the ML pipeline runs the same way every time by putting everything it needs like code, libraries, and settings into one container. This avoids issues from different environments. Airflow helps run each step of the pipeline in order. It can restart failed steps, keep track of progress, and handle more complex workflows, making the whole system easier to manage and scale.
 
+MLflow is integrated for experiment tracking, model artifact storage, metric logging, and model registration. Evidently AI is used for data drift detection to ensure model reliability over time.
+
 ---
 
 ## Folder Structure
 
 ```
+├── .venv/                    # Local virtual environment (ignored in Docker)
 ├── deploy/
 │   ├── docker/               # Dockerfile and build logic
 │   ├── airflow/
@@ -18,11 +21,13 @@ Docker makes sure the ML pipeline runs the same way every time by putting everyt
 │   │   ├── dags/             # Airflow DAG definitions
 │   │   ├── logs/             # Airflow task logs
 │   │   ├── plugins/
-│   └── config/
 ├── data/                     # Raw and processed input files
 ├── models/                   # Trained model outputs
-├── reports/                  # Evaluation results
+├── reports/                  # Evaluation + drift reports
 ├── src/                      # Modular ML pipeline code
+├── mlflow/                   # MLflow tracking + artifact storage
+│   ├── runs/                 # MLflow will populate this with run metadata
+│   ├── artifacts/            # For storing registered model artifacts
 ├── docker-compose.yml        # Airflow + Docker orchestration
 
 ```
@@ -35,6 +40,7 @@ Docker makes sure the ML pipeline runs the same way every time by putting everyt
 - Docker Desktop installed and running
 - Python 3.12 (inside containers only)
 - Airflow 3.0.3 (running in Docker)
+- MLflow server available at http://localhost:5000 (via Docker Compose)
 
 This project uses a two-stage Docker setup:
 - **Docker.pipeline** builds the ML pipeline image with all dependencies and source code.
@@ -59,7 +65,7 @@ docker build -t custom-airflow:runtime -f deploy/docker/Docker.airflow .
 ```bash
 docker compose -f deploy/docker-compose.yaml up airflow-init
 ```
-- Then launch all Airflow services.
+- Launch all services (Airflow + MLflow + Postgres backend):
 ```bash
 docker compose -f deploy/docker-compose.yaml up
 ```
@@ -71,6 +77,62 @@ http://localhost:8080
 **Username**: airflow
 **Password**: airflow
 
+- Access the MLflow UI at:
+```bash
+http://localhost:5000
+```
+
+## MLflow Integration
+
+This project integrates **MLflow** for experiment tracking, model logging, and drift monitoring.
+
+### Tracking Setup
+- MLflow tracking server runs inside Docker on `http://localhost:5000`.
+- The project sets the tracking URI in both `src/model_training.py` and `src/run_pipeline.py`:
+  ```python
+  	mlflow.set_tracking_uri("http://localhost:5000")
+  ```
+- Models, metrics, and artifacts are logged under:
+  ```bash
+  	mlflow/runs/
+	mlflow/artifacts/
+  ```
+
+### Logged Parameters & Metrics
+For classification models (our case: inpatient vs outpatient), the following are logged:
+- Hyperparameters: n_estimators, max_depth, random_state
+- Metrics: accuracy, f1_score
+Artifacts (trained models) are saved to mlflow/artifacts/.
+
+### Model Registration
+After evaluation, the pipeline checks if performance meets thresholds:
+- Classification: accuracy > 0.8 (configurable in src/drift_detection.py and src/run_pipeline.py)
+  ```python
+	mlflow.register_model(
+		f"runs:/{mlflow.active_run().info.run_id}/model",
+		"patient_admission_classifier"
+	)
+  ```
+
+### Model Drift Detection
+src/drift_detection.py was added to monitor changes in input data over time.
+- Tool: evidently
+- Method: DataDriftPreset to detect dataset and feature-level drift
+- Output: JSON report written to reports/drift_report.json
+
+Example format:
+	```json
+		{
+		"drift_detected": true,
+		"feature_drifts": {
+			"feature1": 0.12,
+			"feature2": 0.34,
+			"feature3": 0.07
+		},
+		"overall_drift_score": 0.18
+		}
+	```
+The drift check runs after evaluation in run_pipeline.py.
 
 ## Airflow DAG Overview
 The DAG is defined using the @dag decorator in ml_pipeline_dag.py. Each step in the ML pipeline (preprocessing, feature engineering, training, evaluation) is wrapped in an @task to enable modular, trackable execution.
@@ -97,7 +159,6 @@ To run a task manually (e.g., preprocess):
 ```bash
 docker compose exec airflow-webserver airflow tasks test ml_pipeline_dag preprocess 2025-01-01
 ```
-
 
 ## Monitoring DAGs in Airflow UI
 The Airflow web interface helps verify that the ML pipeline is running correctly from start to finish. It allows you to:

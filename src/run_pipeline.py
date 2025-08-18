@@ -1,7 +1,14 @@
+# src/run_pipeline.py
 """
-Main pipeline script for predicting inpatient vs. outpatient status.
-Performs data loading, preprocessing, training, evaluation, drift detection,
-and saves artifacts/reports. Uses MLflow at http://localhost:5000.
+End-to-end ML pipeline runner.
+
+Steps:
+1. Ingest raw data (from CSV or URL)
+2. Preprocess: flag ranges, split train/test, create drifted train/test (N cycles)
+3. Train + evaluate model
+4. Check performance threshold (accuracy > 0.8 by default)
+5. If threshold met, log & register model to MLflow Model Registry
+6. Run drift detection cycles on test set (each uses its own drifted CSV)
 """
 
 from __future__ import annotations
@@ -11,30 +18,29 @@ import os
 from typing import Dict
 
 import mlflow
+import mlflow.sklearn
 
-from data_preprocessing import preprocess_data
-from feature_engineering import engineer_features
-from model_training import train_model, save_model
-from evaluation import evaluate_model
-from drift_detection import detect_drift
-
-
-PERF_REPORT_PATH = "reports/evaluation_results.json"
-DRIFT_REPORT_PATH = "reports/drift_report.json"
-MIN_ACCURACY = 0.80
-MODEL_NAME = "patient_admission_classifier"  # change as meaningful
+from src.data_ingestion import ingest_data
+from src.data_preprocessing import preprocess_data
+from src.model_training import train_model  # expects (X_train, y_train)
+from src.evaluation import (
+    evaluate_model,
+)  # expects (model, X_test, y_test) -> dict with "accuracy"
+from src.drift_detection import detect_drift
 
 
-def _check_performance_threshold(
-    results: Dict[str, float], min_accuracy: float
-) -> bool:
-    """Return True if accuracy meets threshold; also write a small status file."""
+MODEL_NAME = "patient_admission_classifier"
+ACCURACY_THRESHOLD = 0.80
+
+
+def _check_performance_threshold(results: Dict[str, float], threshold: float) -> bool:
+    """Log a small status file and return True if accuracy meets threshold."""
     os.makedirs("reports", exist_ok=True)
     status = {
         "metric": "accuracy",
         "value": float(results.get("accuracy", float("nan"))),
-        "threshold": float(min_accuracy),
-        "meets_threshold": bool(results.get("accuracy", 0.0) >= min_accuracy),
+        "threshold": float(threshold),
+        "meets_threshold": bool(results.get("accuracy", 0.0) >= threshold),
     }
     with open("reports/performance_check.json", "w") as f:
         json.dump(status, f, indent=2)
@@ -46,58 +52,54 @@ def _check_performance_threshold(
     return status["meets_threshold"]
 
 
-def main():
-    print("Starting patient admission prediction pipeline...")
-
-    # 0) Point MLflow to your local tracking server
+def run_pipeline():
+    # Point to your local MLflow tracking server
     mlflow.set_tracking_uri("http://localhost:5000")
 
-    # Start MLflow run so we can log + register
+    # 0) Ingest raw data (local CSV or URL)
+    raw_path = ingest_data(source_path="data/raw/data-ori.csv")
+
+    # Number of drift cycles to generate & check
+    N_CYCLES = 2
+
+    # 1) Preprocess (also writes train/test and drifted_test_cycle{1..N}.csv)
+    (
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        X_train_drifted,
+        y_train_drifted,
+        X_test_drifted,
+        y_test_drifted,
+    ) = preprocess_data(
+        raw_path,
+        target_col="SOURCE",
+        n_drift_cycles=N_CYCLES,
+    )
+
     with mlflow.start_run() as run:
-        run_id = run.info.run_id
+        # 2) Train
+        model = train_model(X_train, y_train)
 
-        # 1) Load & preprocess
-        train_data, test_data = preprocess_data("data/raw/data-ori.csv")
+        # 3) Evaluate (must return dict with at least "accuracy" and "f1_score")
+        metrics = evaluate_model(model, X_test, y_test)
+        for k, v in metrics.items():
+            # ensure numeric types
+            try:
+                mlflow.log_metric(k, float(v))
+            except Exception:
+                pass
 
-        # 2) Feature engineering
-        train_data = engineer_features(train_data)
-        test_data = engineer_features(test_data)
+        # 4) Threshold gate (Classification: accuracy > 0.8)
+        meets_perf = _check_performance_threshold(metrics, ACCURACY_THRESHOLD)
 
-        # 3) Train model
-        model, train_metrics = train_model(train_data, model_type="logreg")
+        # 5) If threshold met, log & register model
+        #    (log first so "runs:/<run_id>/model" exists)
+        mlflow.sklearn.log_model(model, artifact_path="model")
 
-        # 4) Save model artifact locally
-        save_model(model, "models/model.pkl")
-
-        # 5) Evaluate — logs metrics to MLflow
-        eval_results = evaluate_model(
-            model,
-            test_data,
-            report_path=PERF_REPORT_PATH,
-            tracking_uri="http://localhost:5000",
-        )
-
-        # 6) Performance gate
-        meets_perf = _check_performance_threshold(eval_results, MIN_ACCURACY)
-
-        # 7) Drift detection (feature-wise PSI between train & test)
-        train_X = train_data.drop(columns=["SOURCE"], errors="ignore")
-        test_X = test_data.drop(columns=["SOURCE"], errors="ignore")
-        drift_summary = detect_drift(
-            train_df=train_X,
-            test_df=test_X,
-            out_path=DRIFT_REPORT_PATH,
-            bins=10,
-            psi_threshold=0.2,
-        )
-        print(f"Drift report written to: {DRIFT_REPORT_PATH}")
-        print(
-            f"PSI flagged features (>{drift_summary['psi_threshold']}): "
-            f"{drift_summary['flagged_features']}"
-        )
-
-        # 8) If threshold met → register model
         if meets_perf:
+            run_id = run.info.run_id
             model_uri = f"runs:/{run_id}/model"
             print(f"Registering model from: {model_uri}")
             mlflow.register_model(model_uri, MODEL_NAME)
@@ -105,11 +107,30 @@ def main():
         else:
             print(
                 "WARNING — Model did NOT meet performance threshold. "
-                "Skipping registration (document rationale in README)."
+                "Skipping registration (justify alternative threshold in README if needed)."
             )
 
-    print("Pipeline completed.")
+        # 6) Drift detection cycles on TEST set (each cycle uses a different drifted file)
+        for cycle in range(1, N_CYCLES + 1):
+            ref = "data/test.csv"
+            cur = f"data/drifted_test_cycle{cycle}.csv"
+            print(f"Drift detection (cycle {cycle}) — {ref} vs {cur}")
+            test_drift_results = detect_drift(ref, cur)
+
+            mlflow.log_param(
+                f"test_drift_detected_cycle{cycle}",
+                test_drift_results["drift_detected"],
+            )
+            mlflow.log_param(
+                f"test_overall_drift_score_cycle{cycle}",
+                test_drift_results["overall_drift_score"],
+            )
+
+            if test_drift_results["drift_detected"]:
+                raise ValueError(
+                    f"Data drift detected in test set at cycle {cycle}! Retraining required."
+                )
 
 
 if __name__ == "__main__":
-    main()
+    run_pipeline()

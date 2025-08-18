@@ -114,6 +114,26 @@ After evaluation, the pipeline checks if performance meets thresholds:
 	)
   ```
 
+---
+
+## Model Drift Detection
+
+This project includes both **drift simulation** and **drift detection**.
+
+### Drift Simulation
+To test robustness, we generate synthetic drifted datasets during preprocessing:
+- **Numerical features**: Scaled by 1.2 or perturbed with Gaussian noise (σ = 0.1 × feature_std).
+- **Categorical features**: Randomly flip 10–15% of values to other categories using uniform random selection.
+
+The drifted versions are saved as:
+data/drifted_train.csv
+data/drifted_test.csv
+
+The preprocessing function returns both original and drifted splits so drift checks can run consistently.
+
+**Justification**:
+Simulating drift allows us to validate whether the pipeline can recognize shifts in feature distributions that mimic real-world changes (e.g., new patient demographics, different lab equipment calibrations, or evolving coding practices). Without such testing, a model might silently degrade in production. By systematically injecting noise and category flips, we approximate realistic feature drift scenarios and create a benchmark for evaluating Evidently’s detection accuracy.
+
 ### Model Drift Detection
 src/drift_detection.py was added to monitor changes in input data over time.
 - Tool: evidently

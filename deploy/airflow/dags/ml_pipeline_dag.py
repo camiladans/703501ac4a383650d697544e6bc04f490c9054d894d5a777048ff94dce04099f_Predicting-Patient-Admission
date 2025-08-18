@@ -7,7 +7,7 @@ from joblib import load
 import sys
 import mlflow
 
-# Make '/app' importable so we can use 'from src.<module> import ...'
+# Make '/app' importable, to use 'from src.<module> import ...'
 if "/app" not in sys.path:
     sys.path.append("/app")
 

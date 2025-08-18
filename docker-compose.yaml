@@ -118,6 +118,18 @@ services:
       retries: 5
       start_period: 5s
     restart: always
+  airflow-scheduler:
+    environment:
+      - PYTHONPATH=/app
+  airflow-webserver:
+    environment:
+      - PYTHONPATH=/app
+  airflow-triggerer:
+    environment:
+      - PYTHONPATH=/app
+  airflow-dag-processor:
+    environment:
+      - PYTHONPATH=/app
 
   redis:
     # Redis is limited to 7.2-bookworm due to licensing change.

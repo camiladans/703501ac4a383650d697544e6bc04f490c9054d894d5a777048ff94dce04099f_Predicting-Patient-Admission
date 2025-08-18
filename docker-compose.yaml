@@ -191,7 +191,7 @@ services:
       POSTGRES_PASSWORD: mlflow
       POSTGRES_DB: mlflow
     ports:
-      - "5433:5432"  # change to 5432:5432 if you prefer
+      - "5432:5432"
     volumes:
       - postgres-mlflow-db-volume:/var/lib/postgresql/data
     healthcheck:
@@ -206,7 +206,7 @@ services:
       context: .
       dockerfile: deploy/docker/Dockerfile.mlflow
     ports:
-      - "5050:5000"
+      - "5000:5000"
     environment:
       MLFLOW_BACKEND_STORE_URI: >-
         postgresql://mlflow:mlflow@postgres-mlflow:5432/mlflow

@@ -16,4 +16,5 @@ dependencies = [
     "pre-commit>=4.2.0",
     "psycopg2-binary==2.9.10",
     "scikit-learn>=1.7.1",
+    "yamllint>=1.37.1",
 ]

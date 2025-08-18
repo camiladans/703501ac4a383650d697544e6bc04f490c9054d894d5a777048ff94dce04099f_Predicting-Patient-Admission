@@ -1,0 +1,14 @@
+---
+rules:
+  line-length:
+    max: 120
+    level: warning
+  document-start: disable   # don’t require '---' at start unless you want it
+
+ignore: |
+  node_modules
+  .venv
+  __pycache__
+  .mypy_cache
+  .pytest_cache
+  *.egg-info

@@ -21,20 +21,23 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 def flag_out_of_range(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    df['is_hct_normal'] = ((df['SEX'] == 'M') & df['HAEMATOCRIT'].between(40.0, 52.0)) | \
-                          ((df['SEX'] == 'F') & df['HAEMATOCRIT'].between(37.0, 47.0))
+    df["is_hct_normal"] = (
+        (df["SEX"] == "M") & df["HAEMATOCRIT"].between(40.0, 52.0)
+    ) | ((df["SEX"] == "F") & df["HAEMATOCRIT"].between(37.0, 47.0))
 
-    df['is_hb_normal'] = ((df['SEX'] == 'M') & df['HAEMOGLOBINS'].between(13.0, 17.0)) | \
-                         ((df['SEX'] == 'F') & df['HAEMOGLOBINS'].between(12.0, 16.0))
+    df["is_hb_normal"] = (
+        (df["SEX"] == "M") & df["HAEMOGLOBINS"].between(13.0, 17.0)
+    ) | ((df["SEX"] == "F") & df["HAEMOGLOBINS"].between(12.0, 16.0))
 
-    df['is_rbc_normal'] = ((df['SEX'] == 'M') & df['ERYTHROCYTE'].between(4.5, 6.1)) | \
-                          ((df['SEX'] == 'F') & df['ERYTHROCYTE'].between(4.0, 5.4))
+    df["is_rbc_normal"] = ((df["SEX"] == "M") & df["ERYTHROCYTE"].between(4.5, 6.1)) | (
+        (df["SEX"] == "F") & df["ERYTHROCYTE"].between(4.0, 5.4)
+    )
 
-    df['is_wbc_normal'] = df['LEUCOCYTE'].between(4.0, 10.8)
-    df['is_plt_normal'] = df['THROMBOCYTE'].between(150, 400)
-    df['is_mch_normal'] = df['MCH'].between(27.0, 33.0)
-    df['is_mchc_normal'] = df['MCHC'].between(31.5, 37.0)
-    df['is_mcv_normal'] = df['MCV'].between(80, 98)
+    df["is_wbc_normal"] = df["LEUCOCYTE"].between(4.0, 10.8)
+    df["is_plt_normal"] = df["THROMBOCYTE"].between(150, 400)
+    df["is_mch_normal"] = df["MCH"].between(27.0, 33.0)
+    df["is_mchc_normal"] = df["MCHC"].between(31.5, 37.0)
+    df["is_mcv_normal"] = df["MCV"].between(80, 98)
 
     return df
 
@@ -42,17 +45,29 @@ def flag_out_of_range(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------
 # Helpers for drift creation
 # ---------------------------
-def _infer_cols(df: pd.DataFrame, target_col: Optional[str] = None) -> tuple[list[str], list[str]]:
+def _infer_cols(
+    df: pd.DataFrame, target_col: Optional[str] = None
+) -> tuple[list[str], list[str]]:
     exclude = {target_col} if target_col else set()
-    num_cols = [c for c in df.columns if c not in exclude and pd.api.types.is_numeric_dtype(df[c])]
-    cat_cols = [c for c in df.columns if c not in exclude and not pd.api.types.is_numeric_dtype(df[c])]
+    num_cols = [
+        c
+        for c in df.columns
+        if c not in exclude and pd.api.types.is_numeric_dtype(df[c])
+    ]
+    cat_cols = [
+        c
+        for c in df.columns
+        if c not in exclude and not pd.api.types.is_numeric_dtype(df[c])
+    ]
     return num_cols, cat_cols
 
 
-def _drift_numeric(df: pd.DataFrame,
-                   num_cols: Sequence[str],
-                   train_std: Dict[str, float],
-                   rng: np.random.Generator) -> pd.DataFrame:
+def _drift_numeric(
+    df: pd.DataFrame,
+    num_cols: Sequence[str],
+    train_std: Dict[str, float],
+    rng: np.random.Generator,
+) -> pd.DataFrame:
     out = df.copy()
     for col in num_cols:
         if col not in out.columns:
@@ -70,11 +85,13 @@ def _drift_numeric(df: pd.DataFrame,
     return out
 
 
-def _drift_categorical(df: pd.DataFrame,
-                       cat_cols: Sequence[str],
-                       rng: np.random.Generator,
-                       flip_low: float = 0.10,
-                       flip_high: float = 0.15) -> pd.DataFrame:
+def _drift_categorical(
+    df: pd.DataFrame,
+    cat_cols: Sequence[str],
+    rng: np.random.Generator,
+    flip_low: float = 0.10,
+    flip_high: float = 0.15,
+) -> pd.DataFrame:
     out = df.copy()
     for col in cat_cols:
         if col not in out.columns:
@@ -106,11 +123,13 @@ def _drift_categorical(df: pd.DataFrame,
 # --------------------------------
 # Main entry: preprocessing + drift
 # --------------------------------
-def preprocess_data(path: str,
-                    target_col: Optional[str] = None,
-                    test_size: float = 0.2,
-                    random_state: int = 42,
-                    stratify: bool = True):
+def preprocess_data(
+    path: str,
+    target_col: Optional[str] = None,
+    test_size: float = 0.2,
+    random_state: int = 42,
+    stratify: bool = True,
+):
     """
     Reads CSV at `path`, flags lab-value ranges, splits into train/test,
     creates drifted copies (per spec), and saves outputs to data/.
@@ -169,7 +188,9 @@ def preprocess_data(path: str,
         drifted_test[target_col] = test_data[target_col].values
 
     # Save drifted files (required)
-    (DATA_DIR / "drifted_train.csv").write_text("")  # ensure file path exists on some FS
+    (DATA_DIR / "drifted_train.csv").write_text(
+        ""
+    )  # ensure file path exists on some FS
     drifted_train.to_csv(DATA_DIR / "drifted_train.csv", index=False)
     drifted_test.to_csv(DATA_DIR / "drifted_test.csv", index=False)
 

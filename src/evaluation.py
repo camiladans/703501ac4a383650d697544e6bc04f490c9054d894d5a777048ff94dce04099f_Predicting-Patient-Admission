@@ -16,13 +16,12 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     roc_auc_score,
-    average_precision_score
+    average_precision_score,
 )
 
+
 def evaluate_model(
-    model,
-    test_data: pd.DataFrame,
-    report_path: str = "reports/metrics.txt"
+    model, test_data: pd.DataFrame, report_path: str = "reports/metrics.txt"
 ):
     """
     Evaluates model performance on test data and saves metrics.
@@ -47,7 +46,9 @@ def evaluate_model(
 
     # Predictions
     y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
+    y_proba = (
+        model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
+    )
 
     # Metrics
     acc = accuracy_score(y_test, y_pred)
@@ -79,8 +80,9 @@ def evaluate_model(
         "recall": rec,
         "confusion_matrix": cm,
         "roc_auc": roc_auc,
-        "pr_auc": pr_auc
+        "pr_auc": pr_auc,
     }
+
 
 def load_model(filepath: str = "models/model.pkl"):
     model = joblib.load(filepath)

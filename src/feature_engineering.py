@@ -10,8 +10,9 @@ Preserves 'SOURCE' column if present.
 """
 
 import pandas as pd
-from sklearn.preprocessing import StandardScaler #PolynomialFeatures
+from sklearn.preprocessing import StandardScaler  # PolynomialFeatures
 # from sklearn.feature_selection import VarianceThreshold
+
 
 def scale_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -40,6 +41,7 @@ def scale_features(df: pd.DataFrame) -> pd.DataFrame:
         df_out["SOURCE"] = source
 
     return df_out
+
 
 # def add_polynomial_features(df: pd.DataFrame, degree=2) -> pd.DataFrame:
 #     """
@@ -97,6 +99,7 @@ def scale_features(df: pd.DataFrame) -> pd.DataFrame:
 
 #     return df_out
 
+
 def encode_categorical_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Encodes 'SEX' column using one-hot encoding. Ignores other categorical columns.
@@ -111,6 +114,7 @@ def encode_categorical_features(df: pd.DataFrame) -> pd.DataFrame:
     if "SEX" in df.columns:
         df = pd.get_dummies(df, columns=["SEX"], drop_first=True)
     return df
+
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """

@@ -13,22 +13,37 @@ MLflow is integrated for experiment tracking, model artifact storage, metric log
 ## Folder Structure
 
 ```
-├── .venv/                    # Local virtual environment (ignored in Docker)
 ├── deploy/
-│   ├── docker/               # Dockerfile and build logic
-│   ├── airflow/
-│   │   ├── config/           # Deployment configs
-│   │   ├── dags/             # Airflow DAG definitions
-│   │   ├── logs/             # Airflow task logs
-│   │   ├── plugins/
-├── data/                     # Raw and processed input files
-├── models/                   # Trained model outputs
-├── reports/                  # Evaluation + drift reports
-├── src/                      # Modular ML pipeline code
-├── mlflow/                   # MLflow tracking + artifact storage
-│   ├── runs/                 # MLflow will populate this with run metadata
-│   ├── artifacts/            # For storing registered model artifacts
-├── docker-compose.yml        # Airflow + Docker orchestration
+│   ├── docker/                      # Dockerfiles (pipeline/airflow)
+│   └── docker-compose.yaml          # Orchestration for Airflow + MLflow
+├── data/
+│   ├── raw/                         # Canonical raw data (ingestion writes here)
+│   ├── train.csv
+│   ├── test.csv
+│   ├── drifted_train.csv
+│   ├── drifted_test.csv
+│   ├── drifted_train_cycle{2..N}.csv
+│   └── drifted_test_cycle{2..N}.csv
+├── mlflow/                          # Local tracking storage (volume/bind)
+│   ├── runs/                        # Populated by MLflow tracking server
+│   └── artifacts/                   # Model and other artifacts
+├── models/                          # Extra saved models (optional)
+├── reports/
+│   ├── evaluation_results.json
+│   ├── performance_check.json
+│   ├── drift_report.json            # (if your drift module writes one)
+│   └── test_feature_drifts.json     # per-cycle feature drifts (logged)
+├── src/
+│   ├── data_ingestion.py            # ingest_data(source_path) -> data/raw/data-ori.csv
+│   ├── data_preprocessing.py        # preprocess_data(...) -> returns X/y + drifted X/y
+│   ├── feature_engineering.py
+│   ├── model_training.py            # train_model(...), MLflow logging in training
+│   ├── evaluation.py                # evaluate_model(...): logs accuracy & f1_score
+│   ├── drift_detection.py           # detect_drift(reference_csv, current_csv)
+│   └── run_pipeline.py              # end-to-end pipeline with MLflow + drift cycles
+├── .pre-commit-config.yaml
+├── .dockerignore
+└── README.md
 
 ```
 
@@ -45,6 +60,9 @@ MLflow is integrated for experiment tracking, model artifact storage, metric log
 This project uses a two-stage Docker setup:
 - **Docker.pipeline** builds the ML pipeline image with all dependencies and source code.
 - **Docker.airflow** extends the ML image to run in Apache Airflow for orchestration.
+
+### Build & Run (Docker Compose)
+
 
 ### 1. Build the ML Pipeline Image
 This step builds the base image containing:
@@ -121,15 +139,11 @@ After evaluation, the pipeline checks if performance meets thresholds:
 This project includes both **drift simulation** and **drift detection**.
 
 ### Drift Simulation
-To test robustness, we generate synthetic drifted datasets during preprocessing:
-- **Numerical features**: Scaled by 1.2 or perturbed with Gaussian noise (σ = 0.1 × feature_std).
-- **Categorical features**: Randomly flip 10–15% of values to other categories using uniform random selection.
+Robustness under distributional shift is evaluated by synthesizing drift across both numeric and categorical inputs. For numeric features, a 1.2× multiplicative shift or Gaussian noise with standard deviation fixed to 10% of the training standard deviation (𝜎_train) is applied. This combination represents both covariate scale changes (e.g., assay calibration drift) and random variability (e.g., acquisition noise). For categorical features, 10–15% of non-null values are flipped uniformly at random to a different class, simulating coding inconsistencies or evolving clinical processes. Drift is then detected using Evidently’s DataDriftPreset, producing both a dataset-level flag and feature-level contributions. Monitoring is performed twice per run on distinct drifted test files to emulate repeated checks over time.
 
 The drifted versions are saved as:
 data/drifted_train.csv
 data/drifted_test.csv
-
-The preprocessing function returns both original and drifted splits so drift checks can run consistently.
 
 **Justification**:
 Simulating drift allows us to validate whether the pipeline can recognize shifts in feature distributions that mimic real-world changes (e.g., new patient demographics, different lab equipment calibrations, or evolving coding practices). Without such testing, a model might silently degrade in production. By systematically injecting noise and category flips, we approximate realistic feature drift scenarios and create a benchmark for evaluating Evidently’s detection accuracy.

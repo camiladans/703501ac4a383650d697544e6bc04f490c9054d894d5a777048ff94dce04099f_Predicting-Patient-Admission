@@ -61,47 +61,107 @@ This project uses a two-stage Docker setup:
 - **Docker.pipeline** builds the ML pipeline image with all dependencies and source code.
 - **Docker.airflow** extends the ML image to run in Apache Airflow for orchestration.
 
-### Build & Run (Docker Compose)
+## 1 Create Docker Image and Launch Airflow using docker compose
 
-
-### 1. Build the ML Pipeline Image
-This step builds the base image containing:
-- All Python dependencies from pyproject.toml + uv.lock
-- Source code from src/
+### 1.1 Build the ML Pipeline base image and Airflow Runtime on top of it
 ```bash
 docker build --no-cache -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline -f deploy/docker/Dockerfile.pipeline .
 ```
+- Based on apache/airflow:3.0.3
+- Installs all deps from pyproject.toml + uv.lock
+- Copies source code from src/
 
-### 2. Build the Airflow Runtime Image
-This adds Airflow bootstrapping layers on top of the image.
+### 1.2 Build the Airflow Runtime image (scheduler/webserver/etc.)
 ```bash
-docker build -t custom-airflow:runtime -f deploy/docker/Docker.airflow .
+docker build --no-cache -t custom-airflow:runtime \
+  -f deploy/docker/Dockerfile.airflow .
+```
+- Based on the Docker.pipeline image from previous step
+- Adds the Airflow entrypoint + runtime config
+- This is what docker-compose.yaml uses for airflow-scheduler, airflow-apiserver, etc.
+
+### 1.3 Build the MLflow server image
+```bash
+docker build --no-cache -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f_predicting-patient-admission-mlflow \
+  -f deploy/docker/Dockerfile.mlflow .
+  ```
+- Independent image, doesn’t depend on 1.1 and 1.2
+- Runs mlflow server backed by Postgres
+
+### 1.4 Bring up Infra services only
+```bash
+docker compose -f docker-compose.yaml up -d \
+  postgres redis postgres-mlflow mlflow
+```
+- Check if they are healthy:
+```bash
+docker compose -f docker-compose.yaml ps
 ```
 
-### 3. Launch Airflow (Docker Compose)
-- Initialize the Airflow metadata database.
+### 1.5 Launch Airflow DB (Initialize)
 ```bash
-docker compose -f deploy/docker-compose.yaml up airflow-init
+export AIRFLOW_UID=$(id -u)
+docker compose -f docker-compose.yaml up airflow-init
 ```
-- Launch all services (Airflow + MLflow + Postgres backend):
-```bash
-docker compose -f deploy/docker-compose.yaml up
-```
-- Access the Airflow UI at:
-```bash
-http://localhost:8080
-```
-- Login credentials (default):
-**Username**: airflow
-**Password**: airflow
+Run this:
+- If running for the first time, initialize the Airflow metadata database.
+- If you wiped volumes with docker compose down -v.
+- If you deliberately want to reinitialize the metadata DB.
 
-- Access the MLflow UI at:
+For later runs, use this:
 ```bash
-http://localhost:5000
+docker compose -f docker-compose.yaml up -d
 ```
+
+### 1.6 Launch Airflow Services
+```bash
+docker compose -f docker-compose.yaml up -d \
+  airflow-scheduler airflow-webserver airflow-dag-processor airflow-triggerer
+```
+
+### 1.7 Health Checks
+- Scheduler logs (tail a bit, then Ctrl+C)
+```bash
+docker compose -f docker-compose.yaml logs -f airflow-scheduler | head -n 80
+```
+
+- DAG present?
+```bash
+docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /opt/airflow/dags
+```
+
+- Source code (src) + raw data present?
+```bash
+docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /app/src
+docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /app/data /app/data/raw
+```
+
+- Verify PYTHONPATH import
+```bash
+docker compose -f docker-compose.yaml exec airflow-scheduler \
+  python -c "import os;print('PYTHONPATH:', os.environ.get('PYTHONPATH'))"
+```
+
+- Verify mlflow import
+```bash
+docker compose -f docker-compose.yaml exec airflow-scheduler \
+  python -c "import mlflow,pandas,sklearn; print('OK: imports fine')"
+```
+
+### 1.5. Access the Airflow and MLflow:
+- Access the Airflow UI at: http://localhost:8080
+	- Login credentials (default):
+	**Username**: airflow
+	**Password**: airflow
+- Access the MLflow UI at: http://localhost:5000
+
+### 1.6. Confirm DAG is visible
+```bash
+docker compose -f docker-compose.yaml exec airflow-scheduler airflow dags list | grep ml_pipeline_dag
+```
+
 
 ## MLflow Integration
-
 This project integrates **MLflow** for experiment tracking, model logging, and drift monitoring.
 
 ### Tracking Setup

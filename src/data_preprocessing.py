@@ -5,7 +5,7 @@ Module: data_preprocessing.py
 Handles raw data cleaning and normalization steps:
 - Flags abnormal lab values based on sex-specific ranges
 - Splits cleaned data into train/test
-- Generates drifted copies of train/test and saves to data/
+- Generates ONE drifted copy of train/test and saves to data/
 - Returns tuple:
   (X_train, X_test, y_train, y_test,
    X_train_drifted, y_train_drifted, X_test_drifted, y_test_drifted)
@@ -87,7 +87,7 @@ def _drift_numeric(
     for col in num_cols:
         if col not in out.columns:
             continue
-        # 50/50 choose multiply-by-1.2 vs add Gaussian noise N(0, 0.1*std_train)
+        # 50/50: multiply-by-1.2 vs add Gaussian noise N(0, 0.1*std_train)
         if rng.random() < 0.5:
             out[col] = out[col] * 1.2
         else:
@@ -144,7 +144,6 @@ def preprocess_data(
     test_size: float = 0.2,
     random_state: int = 42,
     stratify: bool = True,
-    n_drift_cycles: int = 1,
 ) -> Tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -157,7 +156,7 @@ def preprocess_data(
 ]:
     """
     Reads CSV at `path`, flags lab-value ranges, splits into train/test,
-    creates drifted copies (per spec), and saves outputs to data/.
+    creates ONE drifted copy, and saves outputs to data/.
 
     Numeric drift:
       - multiply by 1.2 OR add N(0, 0.1*std_train) noise (std from TRAIN)
@@ -167,10 +166,8 @@ def preprocess_data(
     Saves:
       data/train.csv
       data/test.csv
-      data/drifted_train.csv               (cycle 1)
-      data/drifted_test.csv                (cycle 1)
-      data/drifted_train_cycle{2..N}.csv   (if n_drift_cycles > 1)
-      data/drifted_test_cycle{2..N}.csv    (if n_drift_cycles > 1)
+      data/drifted_train.csv
+      data/drifted_test.csv
 
     Returns
     -------
@@ -214,7 +211,7 @@ def preprocess_data(
     # Train std per numeric col for noise scaling
     train_std = {c: float(X_train[c].std() or 0.0) for c in num_cols}
 
-    # ------- Cycle 1 (canonical drift returned by this function) -------
+    # ------- Single drift pass -------
     X_train_drifted = _drift_numeric(X_train, num_cols, train_std, rng)
     X_train_drifted = _drift_categorical(X_train_drifted, cat_cols, rng)
 
@@ -225,29 +222,13 @@ def preprocess_data(
     y_train_drifted = y_train.copy()
     y_test_drifted = y_test.copy()
 
-    # Save cycle 1 to canonical drifted filenames
+    # Save drifted versions
     drifted_train_df = X_train_drifted.copy()
     drifted_test_df = X_test_drifted.copy()
     drifted_train_df[(target_col or "target")] = y_train_drifted.values
     drifted_test_df[(target_col or "target")] = y_test_drifted.values
     drifted_train_df.to_csv(DATA_DIR / "drifted_train.csv", index=False)
     drifted_test_df.to_csv(DATA_DIR / "drifted_test.csv", index=False)
-
-    # ------- Additional cycles (optional) -------
-    if n_drift_cycles and n_drift_cycles > 1:
-        for cycle in range(2, n_drift_cycles + 1):
-            train_c = _drift_categorical(
-                _drift_numeric(X_train, num_cols, train_std, rng), cat_cols, rng
-            )
-            test_c = _drift_categorical(
-                _drift_numeric(X_test, num_cols, train_std, rng), cat_cols, rng
-            )
-            train_c_df = train_c.copy()
-            test_c_df = test_c.copy()
-            train_c_df[(target_col or "target")] = y_train.values
-            test_c_df[(target_col or "target")] = y_test.values
-            train_c_df.to_csv(DATA_DIR / f"drifted_train_cycle{cycle}.csv", index=False)
-            test_c_df.to_csv(DATA_DIR / f"drifted_test_cycle{cycle}.csv", index=False)
 
     # Return tuple with explicit drifted label variables
     return (

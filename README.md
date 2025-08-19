@@ -91,7 +91,7 @@ docker build --no-cache -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff
 ### 1.4 Bring up Infra services only
 ```bash
 docker compose -f docker-compose.yaml up -d \
-  postgres redis postgres-mlflow mlflow
+  postgres postgres-mlflow mlflow
 ```
 - Check if they are healthy:
 ```bash
@@ -136,30 +136,24 @@ docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /app/src
 docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /app/data /app/data/raw
 ```
 
-- Verify PYTHONPATH import
+- Check mlflow
 ```bash
-docker compose -f docker-compose.yaml exec airflow-scheduler \
-  python -c "import os;print('PYTHONPATH:', os.environ.get('PYTHONPATH'))"
+docker compose exec airflow-webserver  python -c "import mlflow; print('mlflow version:', mlflow.__version__)"
+docker compose exec airflow-scheduler python -c "import mlflow; print('mlflow version:', mlflow.__version__)"
+docker compose exec airflow-worker    python -c "import mlflow; print('mlflow version:', mlflow.__version__)"
 ```
 
-- Verify mlflow import
-```bash
-docker compose -f docker-compose.yaml exec airflow-scheduler \
-  python -c "import mlflow,pandas,sklearn; print('OK: imports fine')"
-```
-
-### 1.5. Access the Airflow and MLflow:
+### 1.8 Access the Airflow and MLflow:
 - Access the Airflow UI at: http://localhost:8080
 	- Login credentials (default):
 	**Username**: airflow
 	**Password**: airflow
 - Access the MLflow UI at: http://localhost:5000
 
-### 1.6. Confirm DAG is visible
+### 1.9 Confirm DAG is visible
 ```bash
 docker compose -f docker-compose.yaml exec airflow-scheduler airflow dags list | grep ml_pipeline_dag
 ```
-
 
 ## MLflow Integration
 This project integrates **MLflow** for experiment tracking, model logging, and drift monitoring.

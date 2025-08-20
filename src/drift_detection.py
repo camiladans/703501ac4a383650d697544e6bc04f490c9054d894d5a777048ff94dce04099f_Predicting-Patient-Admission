@@ -1,112 +1,123 @@
 # src/drift_detection.py
 from __future__ import annotations
 
-import json
-import os
-from typing import Any, Dict, List
-
+from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
+
+# Evidently 0.7.x API
 from evidently.report import Report
 from evidently.metric_preset import DataDriftPreset
+from evidently.pipeline.column_mapping import ColumnMapping
+
+# Column names to always exclude (targets, IDs, etc.)
+_EXCLUDE_NAMES = {
+    "SOURCE",
+    "target",
+    "label",
+    "y",
+    "prediction",
+    "id",
+    "gcr_persistent_id",
+    "header_tran_key",
+}
+
+
+def _align(ref: pd.DataFrame, cur: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Keep only shared columns in the same order."""
+    shared = [c for c in ref.columns if c in cur.columns]
+    return ref[shared].copy(), cur[shared].copy()
 
 
 def _choose_feature_columns(df: pd.DataFrame) -> List[str]:
-    """Extract feature columns only (exclude target if present)."""
-    candidates_to_exclude = ["SOURCE", "target", "label", "y"]
-    cols = list(df.columns)
-    for c in candidates_to_exclude:
-        if c in cols:
-            cols.remove(c)
-    return cols
-
-
-def detect_drift(reference_data_path: str, current_data_path: str) -> Dict[str, Any]:
     """
-    Run Evidently's DataDriftPreset on reference vs current CSVs and produce:
-
-    {
-      "drift_detected": bool,
-      "feature_drifts": {"feature1": float, "feature2": float, ...},
-      "overall_drift_score": float
-    }
-
-    - Loads CSVs
-    - Uses only feature columns (target excluded if found)
-    - Uses Report(metrics=[DataDriftPreset()])
-    - Extracts:
-        - drift_detected from metrics[0]["result"]["dataset_drift"]
-        - per-feature scores from metrics[1]["result"]["drift_by_columns"]
-          (falls back to metrics[0] if needed)
-    - Ensures at least 3 features are included (or all if < 3)
-    - Saves JSON to reports/drift_report.json and returns the same dict
+    Choose usable feature columns:
+    - Exclude known target/ID columns by name
+    - Exclude datetime-like columns by dtype
     """
-    # --- Load data ---
-    ref_df = pd.read_csv(reference_data_path)
-    cur_df = pd.read_csv(current_data_path)
+    cols = [c for c in df.columns if c not in _EXCLUDE_NAMES]
+    dt_cols = set(df.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns)
+    return [c for c in cols if c not in dt_cols]
 
-    feature_cols = _choose_feature_columns(ref_df)
-    # Keep common columns only
-    feature_cols = [c for c in feature_cols if c in cur_df.columns]
 
-    if len(feature_cols) == 0:
+def _coerce_object_to_string(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce object columns to pandas 'string' dtype for consistency."""
+    obj_cols = df.select_dtypes(include=["object"]).columns
+    if len(obj_cols):
+        df = df.copy()
+        df[obj_cols] = df[obj_cols].astype("string")
+    return df
+
+
+def detect_drift(
+    reference_csv_path: str,
+    current_csv_path: str,
+    html_report_path: Optional[str] = None,  # e.g., "/app/reports/drift_report.html"
+) -> Dict[str, Any]:
+    """
+    Run Evidently DataDriftPreset on two CSVs and return a summary dict.
+
+    Returns:
+        {
+          "drift_detected": bool,
+          "overall_drift_score": float  # fraction [0..1] of drifted features
+        }
+    Compatible with Evidently >= 0.7.0 (tested on 0.7.11).
+    """
+    # --- Load ---
+    ref = pd.read_csv(reference_csv_path)
+    cur = pd.read_csv(current_csv_path)
+
+    # --- Align schemas (shared columns in same order) ---
+    ref, cur = _align(ref, cur)
+    if ref.empty or cur.empty:
         raise ValueError(
-            "No common feature columns found between reference and current data."
+            "Reference/current dataframes are empty after alignment (no shared columns or no rows)."
         )
 
-    # --- Run Evidently report ---
+    # --- Select features & basic sanitization ---
+    features = _choose_feature_columns(ref)
+    if not features:
+        raise ValueError(
+            "No usable feature columns found after exclusions; "
+            "check your CSVs, exclude list, and datetime columns."
+        )
+
+    ref = ref[features]
+    cur = cur[features]
+
+    # Coerce object -> string for categorical consistency
+    ref = _coerce_object_to_string(ref)
+    cur = _coerce_object_to_string(cur)
+
+    # Let Evidently infer types; we restrict to features explicitly
+    mapping = ColumnMapping(
+        target=None,
+        prediction=None,
+        numerical_features=None,
+        categorical_features=None,
+    )
+
+    # --- Build & run report ---
     report = Report(metrics=[DataDriftPreset()])
-    report.run(reference_data=ref_df[feature_cols], current_data=cur_df[feature_cols])
-    rep = report.as_dict()
+    report.run(reference_data=ref, current_data=cur, column_mapping=mapping)
 
-    # --- Extract drift_detected (dataset-level) ---
-    # Per instructions: metrics[0]["result"]["dataset_drift"]
-    try:
-        drift_detected = bool(rep["metrics"][0]["result"]["dataset_drift"])
-    except Exception:
-        # Fallback to False if key path changes
-        drift_detected = False
+    if html_report_path:
+        report.save_html(html_report_path)
 
-    # --- Extract feature-level drift scores ---
-    # Per instructions: metrics[1]["result"]["drift_by_columns"]
-    by_cols = None
-    try:
-        by_cols = rep["metrics"][1]["result"]["drift_by_columns"]
-    except Exception:
-        # Some versions place drift_by_columns in metrics[0]
-        try:
-            by_cols = rep["metrics"][0]["result"]["drift_by_columns"]
-        except Exception:
-            by_cols = {}
+    # --- Parse summary ---
+    summary = report.as_dict()
+    drift_detected = False
+    overall_score = 0.0
 
-    # Each entry typically has keys like: { "drift_score": float, "drift_detected": bool, ... }
-    # Choose at least 3 features (or all if < 3). If >3, pick the first 3 (simple & deterministic).
-    selected = feature_cols if len(feature_cols) <= 3 else feature_cols[:3]
+    # DataDriftPreset result carries 'dataset_drift' and 'share_of_drifted_features'
+    for m in summary.get("metrics", []):
+        res = m.get("result", {})
+        if "dataset_drift" in res:
+            drift_detected = bool(res["dataset_drift"])
+            overall_score = float(res.get("share_of_drifted_features", 0.0))
+            break
 
-    feature_drifts: Dict[str, float] = {}
-    for col in selected:
-        info = by_cols.get(col, {})
-        score = info.get("drift_score")
-        # Ensure it's a float; if missing, fall back to 0.0
-        try:
-            feature_drifts[col] = float(score) if score is not None else 0.0
-        except Exception:
-            feature_drifts[col] = 0.0
-
-    # --- Overall drift score: average of selected feature scores ---
-    if len(feature_drifts) > 0:
-        overall = sum(feature_drifts.values()) / len(feature_drifts)
-    else:
-        overall = 0.0
-
-    out = {
+    return {
         "drift_detected": drift_detected,
-        "feature_drifts": feature_drifts,
-        "overall_drift_score": float(overall),
+        "overall_drift_score": overall_score,
     }
-
-    # --- Save to reports/drift_report.json ---
-    os.makedirs("reports", exist_ok=True)
-    with open("reports/drift_report.json", "w") as f:
-        json.dump(out, f, indent=2)
-
-    return out

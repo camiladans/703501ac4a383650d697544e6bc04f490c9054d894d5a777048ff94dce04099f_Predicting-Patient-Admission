@@ -46,7 +46,7 @@ MLflow is integrated for experiment tracking, model artifact storage, metric log
 
 This project uses a two-stage Docker setup:
 - **Docker.pipeline** builds the ML pipeline image with all dependencies and source code.
-- **Docker.airflow** extends the ML image to run in Apache Airflow for orchestration.
+- **Docker.mlflow** extends the ML image to run in Apache Airflow for orchestration.
 
 ## 1 Create Docker Image
 

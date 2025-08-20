@@ -47,7 +47,7 @@
 x-airflow-common: &airflow-common
   build:
     context: .
-    dockerfile: deploy/docker/Dockerfile.airflow  # builds Stage 1 and 2
+    dockerfile: deploy/docker/Dockerfile.pipeline  # builds Stage 1 and 2
   image: custom-airflow:runtime
 
   # In order to add custom dependencies or upgrade provider distributions you
@@ -60,18 +60,16 @@ x-airflow-common: &airflow-common
 
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__CORE__AUTH_MANAGER: >-
-      airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
-      postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     # AIRFLOW__CELERY__RESULT_BACKEND: >-
     #   db+postgresql://airflow:airflow@postgres/airflow
     # AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: >-
-      http://airflow-apiserver:8080/execution/
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks.
     # See:
@@ -80,9 +78,10 @@ x-airflow-common: &airflow-common
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     # WARNING: Use _PIP_ADDITIONAL_REQUIREMENTS ONLY for quick checks.
     # For development/test/production, build/extend the Airflow image.
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    _PIP_ADDITIONAL_REQUIREMENTS: ""
     # The following line can set a custom config file, stored in local config.
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    PYTHONPATH: /app/src:/opt/airflow
 
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/dags:/opt/airflow/dags
@@ -105,7 +104,7 @@ x-airflow-common: &airflow-common
 
 services:
   postgres:
-    image: postgres:13
+    image: postgres:15.8-alpine
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
@@ -135,11 +134,28 @@ services:
 
   airflow-apiserver:
     <<: *airflow-common
-    command: airflow api-server
+    command: api-server
     ports:
-      - "8080:8080"
+      - "8081:8080"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"     # UI on http://localhost:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -193,12 +209,13 @@ services:
     ports:
       - "5433:5432"  # change to 5432:5432 if you prefer
     volumes:
-      - postgres-mlflow-db-volume:/var/lib/postgresql/datawhich
+      - postgres-mlflow-db-volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "mlflow"]
+      test: ["CMD-SHELL","pg_isready -U $${POSTGRES_USER:-mlflow} -d $${POSTGRES_DB:-mlflow} -h 127.0.0.1 -p 5432"]
       interval: 10s
-      retries: 3
-      start_period: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
     restart: always
 
   mlflow:
@@ -208,8 +225,7 @@ services:
     ports:
       - "5000:5000"
     environment:
-      MLFLOW_BACKEND_STORE_URI: >-
-        postgresql://mlflow:mlflow@postgres-mlflow:5432/mlflow
+      MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@postgres-mlflow:5432/mlflow
       MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
     volumes:
       - mlflow-artifacts:/mlflow/artifacts

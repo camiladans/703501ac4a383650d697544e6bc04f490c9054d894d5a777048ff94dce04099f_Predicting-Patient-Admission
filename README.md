@@ -13,37 +13,24 @@ MLflow is integrated for experiment tracking, model artifact storage, metric log
 ## Folder Structure
 
 ```
-├── deploy/
-│   ├── docker/                      # Dockerfiles (pipeline/airflow)
-│   └── docker-compose.yaml          # Orchestration for Airflow + MLflow
-├── data/
-│   ├── raw/                         # Canonical raw data (ingestion writes here)
-│   ├── train.csv
-│   ├── test.csv
-│   ├── drifted_train.csv
-│   ├── drifted_test.csv
-│   ├── drifted_train_cycle{2..N}.csv
-│   └── drifted_test_cycle{2..N}.csv
-├── mlflow/                          # Local tracking storage (volume/bind)
-│   ├── runs/                        # Populated by MLflow tracking server
-│   └── artifacts/                   # Model and other artifacts
-├── models/                          # Extra saved models (optional)
-├── reports/
-│   ├── evaluation_results.json
-│   ├── performance_check.json
-│   ├── drift_report.json            # (if your drift module writes one)
-│   └── test_feature_drifts.json     # per-cycle feature drifts (logged)
-├── src/
-│   ├── data_ingestion.py            # ingest_data(source_path) -> data/raw/data-ori.csv
-│   ├── data_preprocessing.py        # preprocess_data(...) -> returns X/y + drifted X/y
-│   ├── feature_engineering.py
-│   ├── model_training.py            # train_model(...), MLflow logging in training
-│   ├── evaluation.py                # evaluate_model(...): logs accuracy & f1_score
-│   ├── drift_detection.py           # detect_drift(reference_csv, current_csv)
-│   └── run_pipeline.py              # end-to-end pipeline with MLflow + drift cycles
-├── .pre-commit-config.yaml
-├── .dockerignore
-└── README.md
+.
+├─ deploy/
+│  └─ docker/
+│     ├─ Dockerfile.pipeline     # builds custom Airflow runtime (with your deps)
+│     └─ Dockerfile.mlflow       # MLflow image (optional; used by compose)
+├─ deploy/airflow/
+│  ├─ dags/                      # your DAGs
+│  ├─ logs/                      # runtime logs (mounted)
+│  ├─ plugins/                   # custom operators/plugins
+│  └─ config/                    # airflow.cfg (created by init)
+├─ src/                          # pipeline code (imported by DAGs)
+├─ data/                         # datasets (mounted)
+├─ models/                       # serialized models/artifacts
+├─ reports/                      # generated reports
+├─ docker-compose.yaml
+├─ pyproject.toml
+├─ uv.lock                       # if you’re using uv lockfile
+└─ .env                          # compose variables (you create this)
 
 ```
 
@@ -61,93 +48,26 @@ This project uses a two-stage Docker setup:
 - **Docker.pipeline** builds the ML pipeline image with all dependencies and source code.
 - **Docker.airflow** extends the ML image to run in Apache Airflow for orchestration.
 
-## 1 Create Docker Image and Launch Airflow using docker compose
+## 1 Create Docker Image
 
-### 1.1 Build the ML Pipeline base image and Airflow Runtime on top of it
+### 1.1 Build the ML Pipeline base image
 ```bash
-docker build --no-cache -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f-ml-pipeline -f deploy/docker/Dockerfile.pipeline .
-```
-- Based on apache/airflow:3.0.3
-- Installs all deps from pyproject.toml + uv.lock
-- Copies source code from src/
-
-<!-- ### 1.2 Build the Airflow Runtime image (scheduler/webserver/etc.)
-```bash
-docker build --no-cache -t custom-airflow:runtime \
-  -f deploy/docker/Dockerfile.airflow .
-```
-- Extends the ML pipeline base image
-- Adds Airflow entrypoint and runtime configuration
-- Used by docker-compose.yaml for all Airflow services -->
-
-### 1.3 Build the MLflow server image
-```bash
-docker build --no-cache -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f_predicting-patient-admission-mlflow \
-  -f deploy/docker/Dockerfile.mlflow .
+docker compose -f docker-compose.yaml up -d --build
 ```
 
-### 1.4 Bring up Infra services only
+### 1.2 Build the MLflow server image
 ```bash
-docker compose -f docker-compose.yaml up -d \
-  postgres mlflow
-```
-- Check if they are healthy:
-```bash
-docker compose -f docker-compose.yaml ps
+docker compose run --rm airflow-init
 ```
 
-### 1.5 Launch Airflow DB (Initialize)
-```bash
-export AIRFLOW_UID=$(id -u)
-docker compose -f docker-compose.yaml up airflow-init
-```
-Run this:
-- If running for the first time, initialize the Airflow metadata database.
-- If you wiped volumes with docker compose down -v.
-- If you deliberately want to reinitialize the metadata DB.
-
-For later runs, use this:
-```bash
-docker compose -f docker-compose.yaml up -d
-```
-
-### 1.6 Launch Airflow Services
-```bash
-docker compose -f docker-compose.yaml up -d \
-  airflow-scheduler airflow-webserver airflow-dag-processor airflow-triggerer
-```
-
-### 1.7 Health Checks
-- Scheduler logs (tail a bit, then Ctrl+C)
-```bash
-docker compose -f docker-compose.yaml logs -f airflow-scheduler | head -n 80
-```
-
-- DAG present?
-```bash
-docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /opt/airflow/dags
-```
-
-- Source code (src) + raw data present?
-```bash
-docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /app/src
-docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /app/data /app/data/raw
-```
-
-- Check mlflow
-```bash
-docker-compose up -d
-curl http://localhost:5000 # Should return HTML
-```
-
-### 1.8 Access the Airflow and MLflow:
-- Access the Airflow UI at: http://localhost:8080
+### 1.3 Access the Airflow and MLflow:
+- Access the Airflow UI at: http://localhost:8081
 	- Login credentials (default):
 	**Username**: airflow
 	**Password**: airflow
 - Access the MLflow UI at: http://localhost:5000
 
-### 1.9 Confirm DAG is visible
+### 1.4 Confirm DAG is visible
 ```bash
 docker compose -f docker-compose.yaml exec airflow-scheduler airflow dags list | grep ml_pipeline_dag
 ```
@@ -338,8 +258,7 @@ reports/
 
 ---
 
-## Reflection (August 3, 2025)
+## Reflection (August 20, 2025)
 
-One challenges I faced was getting SHAP and matplotlib to work inside the Docker image. Even though they were listed in my dependency files, the tools were not found after building the image. I tried troubleshooting the issue, but it took too much time and delayed progress. In the end, I decided to remove SHAP and matplotlib from the pipeline to focus on getting the core ML workflow running. Aside from that, setting up pre-commit hooks also caused a few formatting problems that I had to fix manually. Overall, adapting the modular pipeline code to work with Airflow and Docker took some trial and error, especially with managing the uv dependency setup.
-
+The biggest challenge that i faced what not being able to to launch airflow again. i thought i got this fixed in HW2. but seems need to start again for HW3 with the mlflow in the mix. when
 ---

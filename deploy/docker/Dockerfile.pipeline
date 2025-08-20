@@ -1,37 +1,25 @@
-# deploy/docker/Dockerfile.pipeline
-FROM apache/airflow:3.0.3-python3.12 AS ml-pipeline
+# Base image: Apache Airflow official image for consistency in ML orchestration
+FROM apache/airflow:3.0.3
 
-# --- OS deps as root (venv tooling + compilers help manylibs) ---
+# Switched to root so we can run some quick OS updates and binary copy for uv
 USER root
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /bin/uv
+
+# Install system dependencies required for ML libraries (e.g., libgomp1 for OpenMP in lightgbm or scikit-learn)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3-venv build-essential curl \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --chown=airflow:root pyproject.toml uv.lock /opt/airflow/
 
-WORKDIR /app
+# Set /opt/airflow as working directory, mimicking the regular base airflow image
+WORKDIR /opt/airflow
 
-# Create & use our own venv
+# Export locked dependencies to a temporary requirements.txt as root
+RUN uv export --format requirements-txt --no-dev --output-file /tmp/requirements.txt
+# RUN uv export --locked --format requirements-txt --no-dev --output-file /tmp/requirements.txt
+
+# We switch back to airflow user for package installation to user site-packages
 USER airflow
-RUN python -m venv /home/airflow/.venv
-ENV VIRTUAL_ENV=/home/airflow/.venv
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Upgrade base tooling, then install mlflow
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
- && pip install --no-cache-dir mlflow==2.15.1
-
-# Sanity check
-RUN python - <<'PY'
-import mlflow, sys
-print("✅ mlflow installed in custom venv:", mlflow.__version__, file=sys.stderr)
-PY
-
-# (Optional) install the rest of your deps here too:
-# COPY --chown=airflow:root pyproject.toml requirements.txt ./
-# RUN pip install --no-cache-dir -r requirements.txt
-
-# Your code
-COPY --chown=airflow:root src/ ./src/
-
-# Make /app importable
-ENV PYTHONPATH=/app
+# We used system wide pip to install requirements to base python. The same environment apache uses.
+RUN pip install --no-cache-dir -r /tmp/requirements.txt

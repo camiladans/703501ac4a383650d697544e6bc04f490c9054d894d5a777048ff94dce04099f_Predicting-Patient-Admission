@@ -70,8 +70,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
-
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: >-
+      http://airflow-apiserver:8080/execution/
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks.
     # See:
@@ -83,7 +83,7 @@ x-airflow-common: &airflow-common
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     # The following line can set a custom config file, stored in local config.
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
-    PYTHONPATH: /app
+
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/logs:/opt/airflow/logs
@@ -98,8 +98,8 @@ x-airflow-common: &airflow-common
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
-    # redis:
-    #   condition: service_healthy
+    redis:
+      condition: service_healthy
     postgres:
       condition: service_healthy
 
@@ -119,40 +119,23 @@ services:
       start_period: 5s
     restart: always
 
-  # redis:
-  #   # Redis is limited to 7.2-bookworm due to licensing change.
-  #   # See: https://redis.io/blog/redis-adopts-dual-source-available-licensing/
-  #   image: redis:7.2-bookworm
-  #   expose:
-  #     - 6379
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 10s
-  #     timeout: 30s
-  #     retries: 50
-  #     start_period: 30s
-  #   restart: always
+  redis:
+    # Redis is limited to 7.2-bookworm due to licensing change.
+    # See: https://redis.io/blog/redis-adopts-dual-source-available-licensing/
+    image: redis:7.2-bookworm
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
 
-  # airflow-apiserver:
-  #   <<: *airflow-common
-  #   command: api-server
-  #   ports:
-  #     - "8081:8080"
-  #   healthcheck:
-  #     test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 30s
-  #   restart: always
-  #   depends_on:
-  #     <<: *airflow-common-depends-on
-  #     airflow-init:
-  #       condition: service_completed_successfully
-
-  airflow-webserver:
+  airflow-apiserver:
     <<: *airflow-common
-    command: api-server
+    command: airflow api-server
     ports:
       - "8080:8080"
     healthcheck:
@@ -166,7 +149,6 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-
 
   airflow-scheduler:
     <<: *airflow-common
@@ -209,9 +191,9 @@ services:
       POSTGRES_PASSWORD: mlflow
       POSTGRES_DB: mlflow
     ports:
-      - "5433:5432"
+      - "5433:5432"  # change to 5432:5432 if you prefer
     volumes:
-      - postgres-mlflow-db-volume:/var/lib/postgresql/data
+      - postgres-mlflow-db-volume:/var/lib/postgresql/datawhich
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "mlflow"]
       interval: 10s

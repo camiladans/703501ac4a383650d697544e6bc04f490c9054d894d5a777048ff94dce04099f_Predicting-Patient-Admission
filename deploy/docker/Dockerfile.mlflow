@@ -5,8 +5,7 @@ WORKDIR /app
 
 # Minimal build deps for slim (gcc/g++ for any native wheels if needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
+    gcc g++ \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
@@ -20,15 +19,9 @@ VOLUME ["/mlflow/artifacts"]
 
 EXPOSE 5000
 
-# Use a single ENV with continuations (valid syntax)
 ENV MLFLOW_BACKEND_STORE_URI=postgresql://mlflow:mlflow@postgres-mlflow:5432/mlflow \
     MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts \
     MLFLOW_HOST=0.0.0.0 \
     MLFLOW_PORT=5000
 
-# Start server (quote vars so spaces/colons are safe)
-CMD ["sh", "-c", "mlflow server \
-  --backend-store-uri \"$MLFLOW_BACKEND_STORE_URI\" \
-  --default-artifact-root \"$MLFLOW_DEFAULT_ARTIFACT_ROOT\" \
-  --host \"$MLFLOW_HOST\" \
-  --port \"$MLFLOW_PORT\""]
+CMD ["sh","-c","mlflow server --backend-store-uri $MLFLOW_BACKEND_STORE_URI --default-artifact-root $MLFLOW_DEFAULT_ARTIFACT_ROOT --host $MLFLOW_HOST --port $MLFLOW_PORT"]

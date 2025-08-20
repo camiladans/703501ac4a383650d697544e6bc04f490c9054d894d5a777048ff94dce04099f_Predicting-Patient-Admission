@@ -8,7 +8,7 @@ Steps:
 3. Train + evaluate model
 4. Check performance threshold (accuracy > 0.8 by default)
 5. If threshold met, log & register model to MLflow Model Registry
-6. Run drift detection on test set (single comparison)
+6. Run drift detection on test set (twice)
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ import mlflow.sklearn
 
 from src.data_ingestion import ingest_data
 from src.data_preprocessing import preprocess_data
-from src.model_training import train_model  # expects (X_train, y_train)
-from src.evaluation import evaluate_model  # expects (model, X_test, y_test) -> dict
+from src.model_training import train_model
+from src.evaluation import evaluate_model
 from src.drift_detection import detect_drift
 
 MODEL_NAME = "patient_admission_classifier"
@@ -31,7 +31,6 @@ ACCURACY_THRESHOLD = 0.80
 
 
 def _check_performance_threshold(results: Dict[str, float], threshold: float) -> bool:
-    """Log a small status file and return True if accuracy meets threshold."""
     os.makedirs("reports", exist_ok=True)
     status = {
         "metric": "accuracy",
@@ -50,32 +49,28 @@ def _check_performance_threshold(results: Dict[str, float], threshold: float) ->
 
 
 def run_pipeline():
-    # Use env var if set; fall back to container service URL (works in docker-compose)
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
 
-    # 0) Ingest raw data (local CSV or URL)
+    # 0) Ingest raw data
     raw_path = ingest_data(source_path="data/raw/data-ori.csv")
 
-    # 1) Preprocess (writes train/test + drifted_train.csv, drifted_test.csv)
+    # 1) Preprocess
     (
         X_train,
         X_test,
         y_train,
         y_test,
-        X_train_drifted,  # available if you want to simulate training under drift
+        X_train_drifted,
         y_train_drifted,
-        X_test_drifted,  # not used directly; saved to data/drifted_test.csv
+        X_test_drifted,
         y_test_drifted,
-    ) = preprocess_data(
-        raw_path,
-        target_col="SOURCE",
-    )
+    ) = preprocess_data(raw_path, target_col="SOURCE")
 
     with mlflow.start_run() as run:
         # 2) Train
         model = train_model(X_train, y_train)
 
-        # 3) Evaluate (must return dict with at least "accuracy" and "f1_score")
+        # 3) Evaluate
         metrics = evaluate_model(model, X_test, y_test)
         for k, v in metrics.items():
             try:
@@ -83,10 +78,10 @@ def run_pipeline():
             except Exception:
                 pass
 
-        # 4) Threshold gate (Classification: accuracy > 0.8)
+        # 4) Threshold gate
         meets_perf = _check_performance_threshold(metrics, ACCURACY_THRESHOLD)
 
-        # 5) Log & (conditionally) register model
+        # 5) Log & register
         mlflow.sklearn.log_model(model, artifact_path="model")
         if meets_perf:
             run_id = run.info.run_id
@@ -95,24 +90,19 @@ def run_pipeline():
             mlflow.register_model(model_uri, MODEL_NAME)
             print(f"Model registered under name: {MODEL_NAME}")
         else:
-            print(
-                "WARNING — Model did NOT meet performance threshold. "
-                "Skipping registration (justify alternative threshold in README if needed)."
-            )
+            print("WARNING — Model did NOT meet threshold. Skipping registration.")
 
-        # 6) Single drift detection on TEST set
-        ref = "data/test.csv"
-        cur = "data/drifted_test.csv"
-        print(f"Drift detection — {ref} vs {cur}")
-        test_drift_results = detect_drift(ref, cur)
+        # 6) Drift detection on test set — run twice
 
+        test_drift_results = detect_drift("data/test.csv", "data/drifted_test.csv")
         mlflow.log_param("test_drift_detected", test_drift_results["drift_detected"])
         mlflow.log_param(
             "test_overall_drift_score", test_drift_results["overall_drift_score"]
         )
-
         if test_drift_results["drift_detected"]:
-            raise ValueError("Data drift detected in test set! Retraining required.")
+            raise ValueError(
+                "Data drift detected in test set! Model retraining required."
+            )
 
 
 if __name__ == "__main__":

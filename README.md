@@ -71,27 +71,25 @@ docker build --no-cache -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff
 - Installs all deps from pyproject.toml + uv.lock
 - Copies source code from src/
 
-### 1.2 Build the Airflow Runtime image (scheduler/webserver/etc.)
+<!-- ### 1.2 Build the Airflow Runtime image (scheduler/webserver/etc.)
 ```bash
 docker build --no-cache -t custom-airflow:runtime \
   -f deploy/docker/Dockerfile.airflow .
 ```
-- Based on the Docker.pipeline image from previous step
-- Adds the Airflow entrypoint + runtime config
-- This is what docker-compose.yaml uses for airflow-scheduler, airflow-apiserver, etc.
+- Extends the ML pipeline base image
+- Adds Airflow entrypoint and runtime configuration
+- Used by docker-compose.yaml for all Airflow services -->
 
 ### 1.3 Build the MLflow server image
 ```bash
 docker build --no-cache -t 703501ac4a383650d697544e6bc04f490c9054d894d5a777048ff94dce04099f_predicting-patient-admission-mlflow \
   -f deploy/docker/Dockerfile.mlflow .
-  ```
-- Independent image, doesn’t depend on 1.1 and 1.2
-- Runs mlflow server backed by Postgres
+```
 
 ### 1.4 Bring up Infra services only
 ```bash
 docker compose -f docker-compose.yaml up -d \
-  postgres postgres-mlflow mlflow
+  postgres mlflow
 ```
 - Check if they are healthy:
 ```bash
@@ -138,9 +136,8 @@ docker compose -f docker-compose.yaml exec airflow-scheduler ls -l /app/data /ap
 
 - Check mlflow
 ```bash
-docker compose exec airflow-webserver  python -c "import mlflow; print('mlflow version:', mlflow.__version__)"
-docker compose exec airflow-scheduler python -c "import mlflow; print('mlflow version:', mlflow.__version__)"
-docker compose exec airflow-worker    python -c "import mlflow; print('mlflow version:', mlflow.__version__)"
+docker-compose up -d
+curl http://localhost:5000 # Should return HTML
 ```
 
 ### 1.8 Access the Airflow and MLflow:

@@ -14,7 +14,6 @@ Handles raw data cleaning and normalization steps:
 from __future__ import annotations
 
 import os
-import logging
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
@@ -22,8 +21,12 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+# logging.basicConfig(level=logging.INFO)
+
+# logger = logging.getLogger(__name__)
+# # switch INFO → WARNING to suppress info-level chatter in airflow
+# logging.basicConfig(level=logging.WARNING)
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -109,11 +112,11 @@ def preprocess_data(
     if numeric_cols is None:
         numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
 
-    logger.info(
-        "Detected %d numeric and %d categorical features.",
-        len(numeric_cols),
-        len(categorical_cols),
-    )
+    # logger.debug(
+    #     "Detected %d numeric and %d categorical features.",
+    #     len(numeric_cols),
+    #     len(categorical_cols),
+    # )
 
     X_train, X_test, y_train, y_test = train_test_split(
         X,
@@ -199,7 +202,7 @@ def preprocess_data(
     drifted_test[target_col] = y_test_drifted
     drifted_train.to_csv(os.path.join(save_dir, "drifted_train.csv"), index=False)
     drifted_test.to_csv(os.path.join(save_dir, "drifted_test.csv"), index=False)
-    logger.info("Saved drifted_train.csv and drifted_test.csv to %s", save_dir)
+    # logger.debug("Saved drifted_train.csv and drifted_test.csv to %s", save_dir)
 
     return (
         X_train,

@@ -10,19 +10,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    # AIRFLOW__CELERY__RESULT_BACKEND: >-
-    #   db+postgresql://airflow:airflow@postgres/airflow
-    # AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
-    # yamllint disable rule:line-length
-    # yamllint enable rule:line-length
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    # AIRFLOW__SCHEDULER__LOG_SERVER_HOST: airflow-scheduler
-    # AIRFLOW__SCHEDULER__LOG_SERVER_PORT: '8793'
-    AIRFLOW__SCHEDULER__LOG_SERVER_AUTH_TOKEN: "change-me"
     _PIP_ADDITIONAL_REQUIREMENTS: ""
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     PYTHONPATH: /app
@@ -67,8 +59,6 @@ services:
     restart: always
 
   redis:
-    # Redis is limited to 7.2-bookworm due to licensing change.
-    # See: https://redis.io/blog/redis-adopts-dual-source-available-licensing/
     image: redis:7.2-bookworm
     expose:
       - 6379
@@ -83,8 +73,6 @@ services:
   airflow-apiserver:
     <<: *airflow-common
     command: ["airflow", "api-server"]
-    volumes:
-      - ./data:/app/data
     ports:
       - "8080:8080"
     healthcheck:
@@ -99,31 +87,14 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  # airflow-webserver:
-  #   <<: *airflow-common
-  #   command: webserver
-  #   ports:
-  #     - "8080:8080"     # UI on http://localhost:8080
-  #   healthcheck:
-  #     test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 30s
-  #   restart: always
-  #   depends_on:
-  #     <<: *airflow-common-depends-on
-  #     airflow-init:
-  #       condition: service_completed_successfully
-
   airflow-scheduler:
     <<: *airflow-common
     command: ["airflow", "scheduler"]
     healthcheck:
-      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--state", "running", "--limit", "1"]
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
       start_period: 30s
     restart: always
     depends_on:
@@ -157,7 +128,7 @@ services:
       POSTGRES_PASSWORD: mlflow
       POSTGRES_DB: mlflow
     ports:
-      - "5433:5432"  # change to 5432:5432 if you prefer
+      - "5433:5432"
     volumes:
       - postgres-mlflow-db-volume:/var/lib/postgresql/data
     healthcheck:
@@ -191,30 +162,6 @@ services:
         condition: service_healthy
     restart: always
 
-  # You can enable flower by adding "--profile flower" e.g.
-  #   docker-compose --profile flower up
-  # or by explicitly targeting on the command line e.g.
-  #   docker-compose up flower.
-  # See: https://docs.docker.com/compose/profiles/
-  # flower:
-  #   <<: *airflow-common
-  #   command: celery flower
-  #   profiles:
-  #     - flower
-  #   ports:
-  #     - "5555:5555"
-  #   healthcheck:
-  #     test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 30s
-  #   restart: always
-  #   depends_on:
-  #     <<: *airflow-common-depends-on
-  #     airflow-init:
-  #       condition: service_completed_successfully
-
   airflow-triggerer:
     <<: *airflow-common
     command: triggerer
@@ -237,7 +184,6 @@ services:
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
-    # yamllint disable rule:line-length
     command:
       - -c
       - |
@@ -332,8 +278,6 @@ services:
     environment:
       <<: *airflow-common-env
       CONNECTION_CHECK_MAX_COUNT: "0"
-    # Workaround for entrypoint issue. See:
-    # https://github.com/apache/airflow/issues/16252
     command:
       - bash
       - -c

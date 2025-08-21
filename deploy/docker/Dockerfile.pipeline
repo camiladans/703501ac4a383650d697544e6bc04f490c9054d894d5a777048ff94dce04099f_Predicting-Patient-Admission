@@ -8,15 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
-# # Make pip more resilient
-# ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-#     PIP_DEFAULT_TIMEOUT=120 \
-#     PIP_ONLY_BINARY=":all:"  # prefer wheels
+# Make pip more resilient
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=600 \
+    PIP_ONLY_BINARY=":all:"
 
 # Install deps with retries + explicit index + timeout
 RUN set -eux; \
   for i in 1 2 3 4 5; do \
-    python -m pip install --no-cache-dir \
+    python -m pip install \
       --retries 5 --timeout 120 -i https://pypi.org/simple \
       mlflow==3.1.4 \
       psycopg2-binary==2.9.10 \

@@ -40,79 +40,152 @@ def detect_drift(
     reference_csv: str,
     current_csv: str,
     *,
-    target: Optional[str] = None,  # accepted but not required
+    target: Optional[str] = None,  # optional label to exclude
     report_dir: str = "/app/reports",
     report_basename: str = "drift_report.json",
 ) -> Dict[str, Any]:
     """
-    Run Evidently DataDriftPreset on two CSVs.
-    Returns a compact dict suitable for Airflow XCom:
+    Run Evidently DataDriftPreset on two CSVs using only:
+      - evidently.Report, Dataset, DataDefinition
+      - evidently.presets.DataDriftPreset
+      - os, json, typing.{Dict,Any}
+    Returns a compact dict:
       - drift_detected: bool
       - overall_drift_score: float   (alias of share_of_drifted_columns)
       - share_of_drifted_columns: float
-      - report_path: str (JSON with full Evidently output)
+      - report_path: str  (JSON summary we write ourselves)
     """
-    logger.info(f"Loading reference: {reference_csv}")
-    logger.info(f"Loading current:   {current_csv}")
+    # 1) Load CSVs
     ref_df = pd.read_csv(reference_csv)
     cur_df = pd.read_csv(current_csv)
 
-    # Align, select features
+    # 2) Align & choose feature columns
     ref_df, cur_df = _align(ref_df, cur_df)
+    if target:
+        _EXCLUDE.add(target)
     cols = _feature_cols(ref_df)
     if cols:
         ref_df = _coerce_objects_to_string(ref_df[cols])
         cur_df = _coerce_objects_to_string(cur_df[cols])
 
-    # Build Evidently datasets (DataDefinition left empty for auto-infer)
+    # 3) Convert to Evidently datasets
     data_def = DataDefinition()
     ref_data = Dataset.from_pandas(ref_df, data_definition=data_def)
     cur_data = Dataset.from_pandas(cur_df, data_definition=data_def)
 
-    logger.info("Running Evidently DataDriftPreset...")
+    # 4) Run a Report with DataDriftPreset (no serialization APIs)
     report = Report(metrics=[DataDriftPreset()])
     report.run(reference_data=ref_data, current_data=cur_data)
-    res = report.as_dict()
 
-    # Also save optional HTML if requested
-    html_path = os.getenv("EVIDENTLY_HTML_PATH")
-    if html_path:
-        try:
-            report.save_html(html_path)
-            logger.info(f"Evidently HTML saved to: {html_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save Evidently HTML to {html_path}: {e}")
+    # 5) Extract drift info by introspecting report internals (no as_dict/json)
+    def _maybe(obj, *names):
+        for n in names:
+            if hasattr(obj, n):
+                v = getattr(obj, n)
+                if v is not None:
+                    return v
+        return None
 
-    # Extract summary safely
-    try:
-        block = res["metrics"][0]["result"]
-    except Exception:
-        logger.error("Unexpected Evidently result shape. Keys: %s", list(res.keys()))
-        raise
+    res_obj = None
+    # Common internal containers that hold metric results across versions
+    for attr in ("results", "_results", "metric_results", "_metric_results"):
+        items = getattr(report, attr, None)
+        if not items:
+            continue
+        for it in items:
+            r = _maybe(it, "result", "value", "data")
+            if r is None:
+                continue
+            # Look for fields that indicate dataset-level drift summary
+            has_flag = (
+                (hasattr(r, "dataset_drift"))
+                or (isinstance(r, dict) and "dataset_drift" in r)
+                or hasattr(r, "drift_detected")
+            )
+            has_share = (
+                (hasattr(r, "share_of_drifted_columns"))
+                or (isinstance(r, dict) and "share_of_drifted_columns" in r)
+                or hasattr(r, "overall_drift_score")
+            )
+            if has_flag or has_share:
+                res_obj = r
+                break
+        if res_obj is not None:
+            break
 
-    drift_detected = bool(block.get("dataset_drift"))
-    share = float(block.get("share_of_drifted_columns", 0.0))
+    # Last resort: deep scan for {dataset_drift, share_of_drifted_columns}
+    if res_obj is None:
 
-    # Persist JSON report (so XCom stays tiny and MLflow can log it as artifact)
+        def _deep_find(
+            obj,
+            keys=(
+                "dataset_drift",
+                "drift_detected",
+                "share_of_drifted_columns",
+                "overall_drift_score",
+            ),
+        ):
+            seen = set()
+            stack = [obj]
+            while stack:
+                cur = stack.pop()
+                oid = id(cur)
+                if oid in seen:
+                    continue
+                seen.add(oid)
+                if isinstance(cur, dict):
+                    if any(k in cur for k in keys):
+                        return cur
+                    stack.extend(cur.values())
+                else:
+                    for name in dir(cur):
+                        if name.startswith("_"):
+                            continue
+                        try:
+                            val = getattr(cur, name)
+                        except Exception:
+                            continue
+                        stack.append(val)
+            return None
+
+        res_obj = _deep_find(report) or {}
+
+    # Normalize access to values
+    def _get(obj, *names, default=None):
+        for n in names:
+            if isinstance(obj, dict) and n in obj:
+                return obj[n]
+            if hasattr(obj, n):
+                return getattr(obj, n)
+        return default
+
+    drift_detected = bool(
+        _get(res_obj, "dataset_drift", "drift_detected", default=False)
+    )
+    share = float(
+        _get(res_obj, "share_of_drifted_columns", "overall_drift_score", default=0.0)
+        or 0.0
+    )
+
+    # 6) Persist a small JSON summary (so MLflow can log an artifact)
     os.makedirs(report_dir, exist_ok=True)
     report_path = os.path.join(report_dir, report_basename)
-    try:
-        with open(report_path, "w", encoding="utf-8") as f:
-            json.dump(res, f)
-        logger.info(f"Evidently JSON saved to: {report_path}")
-    except Exception as e:
-        logger.warning(f"Failed to write Evidently JSON to {report_path}: {e}")
+    if isinstance(res_obj, dict):
+        payload = {
+            "dataset_drift": res_obj.get("dataset_drift", drift_detected),
+            "share_of_drifted_columns": res_obj.get("share_of_drifted_columns", share),
+        }
+    elif hasattr(res_obj, "__dict__"):
+        payload = {k: v for k, v in res_obj.__dict__.items() if not k.startswith("_")}
+    else:
+        payload = {"dataset_drift": drift_detected, "share_of_drifted_columns": share}
 
-    out = {
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, default=str)
+
+    return {
         "drift_detected": drift_detected,
         "overall_drift_score": share,
         "share_of_drifted_columns": share,
         "report_path": report_path,
     }
-    logger.info(
-        "Drift detected=%s, share_of_drifted_columns=%.3f (report: %s)",
-        drift_detected,
-        share,
-        report_path,
-    )
-    return out

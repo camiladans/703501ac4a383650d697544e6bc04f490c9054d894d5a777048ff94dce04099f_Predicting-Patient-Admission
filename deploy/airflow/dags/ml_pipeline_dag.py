@@ -46,8 +46,29 @@ def ml_pipeline():
         """
         import numpy as np
 
-        # Adjust input path as needed
-        train, test = preprocess_data("/app/data/raw/data-ori.csv")
+        raw_path = "/app/data/raw/data-ori.csv"
+        result = preprocess_data(raw_path)
+
+        # --- handle various return shapes from preprocess_data ---
+        if isinstance(result, dict):
+            # Expecting keys like 'train'/'test' (adjust if yours differ)
+            train = (
+                result.get("train") or result.get("X_train") or result.get("train_df")
+            )
+            test = result.get("test") or result.get("X_test") or result.get("test_df")
+            if train is None or test is None:
+                raise ValueError(
+                    f"preprocess_data returned dict without train/test keys: {list(result.keys())}"
+                )
+        elif isinstance(result, (list, tuple)):
+            # Take the first two items as train/test; ignore extras
+            if len(result) < 2:
+                raise ValueError(
+                    f"preprocess_data returned {len(result)} values, need at least 2 (train, test)"
+                )
+            train, test = result[0], result[1]
+        else:
+            raise TypeError(f"preprocess_data returned unexpected type: {type(result)}")
 
         # Persist pickles
         train_path = "/app/data/train.pkl"
@@ -61,7 +82,7 @@ def ml_pipeline():
 
         # Create a synthetic drifted copy
         drift = test.copy()
-        np.random.seed(42)  # reproducible
+        np.random.seed(42)
 
         # 1) Numeric drift: scale + small Gaussian noise
         num_cols = drift.select_dtypes(include=["number"]).columns.tolist()
@@ -74,9 +95,10 @@ def ml_pipeline():
                 drift[c] = drift[c] * 1.2 + noise
 
         # 2) Categorical drift: flip ~10% of first categorical column, if any
-        cat_cols = drift.select_dtypes(include=["object", "category"]).columns.tolist()
         cat_cols = [
-            c for c in cat_cols if c.lower() not in {"source", "target", "label", "y"}
+            c
+            for c in drift.select_dtypes(include=["object", "category"]).columns
+            if c.lower() not in {"source", "target", "label", "y"}
         ]
         if cat_cols:
             c = cat_cols[0]

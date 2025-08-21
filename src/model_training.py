@@ -87,6 +87,40 @@ class CustomMLModel(mlflow.pyfunc.PythonModel):
 # ======================================================================
 # Training with explicit recall scorer + threshold selection
 # ======================================================================
+
+
+def _coerce_features_numeric(X: pd.DataFrame) -> pd.DataFrame:
+    X = X.copy()
+
+    # Common binary categorical fix
+    if "SEX" in X.columns:
+        # map typical encodings; fall back to category codes if needed
+        map_sex = {"M": 1, "F": 0, "Male": 1, "Female": 0, "m": 1, "f": 0}
+        if X["SEX"].dtype == object:
+            X["SEX"] = X["SEX"].map(map_sex).astype("float64")
+
+    # Convert booleans to 0/1
+    bool_cols = [c for c in X.columns if X[c].dtype == bool]
+    if bool_cols:
+        X[bool_cols] = X[bool_cols].astype("int8")
+
+    # Try numeric coercion for any remaining object columns
+    obj_cols = [c for c in X.columns if X[c].dtype == object]
+    for c in obj_cols:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+
+    # Replace inf with NaN, then impute numeric columns with median
+    X = X.replace([np.inf, -np.inf], np.nan)
+    num_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+    for c in num_cols:
+        if X[c].isna().any():
+            X[c] = X[c].fillna(X[c].median())
+
+    # As a last guard, drop any still-non-numeric columns
+    final_num_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+    return X[final_num_cols]
+
+
 def _encode_target(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     if "SOURCE" not in df.columns:
         raise KeyError("The column 'SOURCE' is missing from the input DataFrame.")
@@ -129,31 +163,44 @@ def _select_threshold_for_recall(
     return float(t_sel), details
 
 
+# --- replace your train_model(...) with this version ---
+
+
 def train_model(
     train_data: pd.DataFrame,
-    model_type: str = "logreg",
+    model_type: str = "rf",
     target_recall: float = 0.90,
     random_state: int = 42,
 ):
     print("Train data columns:", train_data.columns.tolist())
-    X, y = _encode_target(train_data)
+    if "SOURCE" not in train_data.columns:
+        raise KeyError("The column 'SOURCE' is missing from the input DataFrame.")
 
+    # Encode target: IN -> 1 else 0
+    y = train_data["SOURCE"].apply(lambda x: 1 if str(x).upper() == "IN" else 0)
+
+    # Sanitize features to numeric
+    X = train_data.drop(columns=["SOURCE"])
+    X = _coerce_features_numeric(X)
+
+    # Train/val split
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, random_state=random_state, stratify=y
     )
+
+    # Models + grids (recall scorer explicit on positive class=1)
+    recall_pos1 = make_scorer(recall_score, pos_label=1)
 
     if model_type.lower() == "logreg":
         model = LogisticRegression(
             max_iter=1000,
             class_weight="balanced",
-            n_jobs=None,
             random_state=random_state,
         )
         param_grid = {"C": [0.01, 0.1, 1, 10], "solver": ["lbfgs", "liblinear"]}
     elif model_type.lower() == "rf":
         model = RandomForestClassifier(
             random_state=random_state,
-            n_estimators=200,
             class_weight="balanced_subsample",
             n_jobs=-1,
         )
@@ -161,44 +208,51 @@ def train_model(
     else:
         raise ValueError("Unsupported model_type. Choose 'logreg' or 'rf'.")
 
-    recall_pos1 = make_scorer(recall_score, pos_label=1)
-    grid = GridSearchCV(model, param_grid, cv=5, scoring=recall_pos1, n_jobs=-1)
+    # If you still want to see the first underlying error while debugging, set error_score='raise'
+    grid = GridSearchCV(
+        model,
+        param_grid,
+        cv=5,
+        scoring=recall_pos1,
+        n_jobs=-1,
+        error_score="raise",  # helps surface true cause instead of masking
+    )
     grid.fit(X_train, y_train)
 
     best_model = grid.best_estimator_
 
-    # Threshold selection (uses predict_proba if available)
+    # Threshold selection for recall target
     if hasattr(best_model, "predict_proba"):
         p_val = best_model.predict_proba(X_val)[:, 1]
+    elif hasattr(best_model, "decision_function"):
+        d = best_model.decision_function(X_val)
+        p_val = (d - d.min()) / (d.max() - d.min() + 1e-9)
     else:
-        # less ideal: convert decision function or fallback to hard preds
-        if hasattr(best_model, "decision_function"):
-            # Scale to [0,1] roughly via min-max on validation; still approximate
-            d = best_model.decision_function(X_val)
-            p_val = (d - d.min()) / (d.max() - d.min() + 1e-9)
-        else:
-            p_val = best_model.predict(X_val).astype(float)
+        p_val = best_model.predict(X_val).astype(float)
 
+    # Reuse helper from earlier response (assume present in the file)
     threshold, thr_details = _select_threshold_for_recall(
         y_val.values, p_val, target_recall
     )
-
     y_pred = (p_val >= threshold).astype(int)
-    cm = confusion_matrix(y_val, y_pred, labels=[0, 1])
 
+    from sklearn.metrics import (
+        precision_score,
+        recall_score as r_score,
+    )
+
+    cm = confusion_matrix(y_val, y_pred, labels=[0, 1])
     metrics = {
         "accuracy": float(accuracy_score(y_val, y_pred)),
         "precision": float(precision_score(y_val, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_val, y_pred)),
+        "recall": float(r_score(y_val, y_pred)),
         "classification_report": classification_report(y_val, y_pred),
         "threshold": threshold,
         "threshold_selection": thr_details,
-        "confusion_matrix": cm.tolist(),  # easy to serialize
+        "confusion_matrix": cm.tolist(),
     }
 
-    # Return feature order to persist
-    feature_names = list(X.columns)
-
+    feature_names = list(X.columns)  # after coercion (this is what the model expects)
     return best_model, metrics, feature_names
 
 

@@ -1,62 +1,9 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements. See the NOTICE file
-# distributed with this work for additional information regarding
-# copyright ownership. The ASF licenses this file to you under
-# the Apache License, Version 2.0 (the "License"); you may not use
-# this file except in compliance with the License. You may obtain
-# a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-# implied. See the License for the specific language governing
-# permissions and limitations under the License.
-#
-# Basic Airflow cluster configuration for CeleryExecutor with Redis and
-# PostgreSQL.
-#
-# WARNING: This configuration is for local development.
-# Do not use it in a production deployment.
-#
-# This configuration supports basic configuration using environment
-# variables or an .env file. The following variables are supported:
-#
-# AIRFLOW_IMAGE_NAME  - Docker image name used to run Airflow.
-#                       Default: apache/airflow:3.0.3
-# AIRFLOW_UID         - User ID in Airflow containers. Default: 50000
-# AIRFLOW_PROJ_DIR    - Base path to which all files will be volumed.
-#                       Default: .
-#
-# Those configurations are useful mostly in case of standalone testing /
-# running Airflow in test/try-out mode
-#
-# _AIRFLOW_WWW_USER_USERNAME - Admin username (if requested). Default: airflow
-# _AIRFLOW_WWW_USER_PASSWORD - Admin password (if requested). Default: airflow
-# _PIP_ADDITIONAL_REQUIREMENTS - Additional PIP requirements to add when
-#                                starting all containers. Use ONLY for quick
-#                                checks. Installing at container startup is
-#                                done EVERY TIME the service is started.
-#                                Prefer building an image as described at:
-#                                https://airflow.apache.org/docs/docker-stack/build.html
-#                                Default: ''
-#
-# Feel free to modify this file to suit your needs.
 ---
 x-airflow-common: &airflow-common
   build:
     context: .
-    dockerfile: deploy/docker/Dockerfile.pipeline  # builds Stage 1 and 2
+    dockerfile: deploy/docker/Dockerfile.pipeline
   image: custom-airflow:runtime
-
-  # In order to add custom dependencies or upgrade provider distributions you
-  # can use your extended image. Comment the image line, place your Dockerfile
-  # in the directory where you placed docker-compose.yaml and uncomment the
-  # "build" line above. Then run `docker-compose build` to build the images.
-
-  # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.0.3}
-  # custom image is building on top of this
 
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -71,15 +18,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     # yamllint disable rule:line-length
-    # Use simple http server on scheduler for health checks.
-    # See:
-    # https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
     # yamllint enable rule:line-length
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    # WARNING: Use _PIP_ADDITIONAL_REQUIREMENTS ONLY for quick checks.
-    # For development/test/production, build/extend the Airflow image.
+    AIRFLOW__SCHEDULER__LOG_SERVER_HOST: airflow-scheduler
+    AIRFLOW__SCHEDULER__LOG_SERVER_PORT: '8793'
     _PIP_ADDITIONAL_REQUIREMENTS: ""
-    # The following line can set a custom config file, stored in local config.
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     PYTHONPATH: /app
 
@@ -95,6 +38,8 @@ x-airflow-common: &airflow-common
     - ${AIRFLOW_PROJ_DIR:-.}/data:/app/data
     - ${AIRFLOW_PROJ_DIR:-.}/models:/app/models
     - ${AIRFLOW_PROJ_DIR:-.}/reports:/app/reports
+
+    - mlflow-artifacts:/mlflow
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
@@ -171,14 +116,12 @@ services:
     <<: *airflow-common
     command: ["airflow", "scheduler"]
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      test: ["CMD-SHELL", "pgrep -fa 'airflow scheduler' >/dev/null"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
     restart: always
-    volumes:
-      - mlflow-artifacts:/mlflow
     depends_on:
       <<: *airflow-common-depends-on
       airflow-init:

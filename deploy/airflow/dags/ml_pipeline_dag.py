@@ -1,255 +1,186 @@
-# deploy/airflow/dags/ml_pipeline_dag.py
+# ruff: noqa: E402
+from __future__ import annotations
 
-from airflow.decorators import dag, task
-from airflow.operators.empty import EmptyOperator
+"""
+Airflow DAG: ml_pipeline_dag
+Flow:
+  1) step_preprocess  -> ingest, preprocess, save data/train.csv & data/test.csv
+  2) step_train       -> train on train.csv, log model to MLflow, return model_uri
+  3) step_evaluate    -> load model from model_uri, evaluate on test.csv, log metrics
+  4) drift_detection  -> detect drift (test vs drifted_test, train vs drifted_train), log + raise if drift
+"""
+
+# --- stdlib ---
 from datetime import datetime
-from typing import Dict, Any
+import logging
+import os
 import sys
-from airflow.utils.trigger_rule import TriggerRule
 
-# Add '/app' to import path for project modules
-if "/app" not in sys.path:
-    sys.path.append("/app")
+# --- third-party ---
+from airflow.decorators import dag, task
 
-# 3rd-party
-import pandas as pd
-from joblib import load
-import mlflow
+# Ensure project modules are importable
+if "/app/src" not in sys.path:
+    sys.path.append("/app/src")  # noqa: E402
 
-# Project imports
-from src.data_preprocessing import preprocess_data
-from src.feature_engineering import engineer_features
-from src.model_training import train_model, save_model
-from src.evaluation import evaluate_model
-from src.drift_detection import detect_drift
+# --- first-party (project) ---
+from src.data_ingestion import ingest_data  # noqa: E402
+from src.data_preprocessing import preprocess_data  # noqa: E402
+from src.model_training import train_model  # noqa: E402
+from src.evaluation import evaluate_model  # noqa: E402
+from src.drift_detection import detect_drift  # noqa: E402
+
+# ---- Config ----
+logger = logging.getLogger(__name__)
+MLFLOW_URI = "http://mlflow:5000"
+TARGET_COL = "SOURCE"
+RAW_SOURCE = "/app/data/raw/data-ori.csv"  # inside container
 
 
 @dag(
     dag_id="ml_pipeline_dag",
     start_date=datetime(2025, 1, 1),
-    schedule=None,  # manual trigger
+    schedule=None,
     catchup=False,
-    tags=["ml"],
+    tags=["ml", "drift"],
 )
-def ml_pipeline():
-    # ---------- MLflow ----------
-    # Set MLflow tracking server for all tasks in this DAG run
-    mlflow.set_tracking_uri("http://mlflow:5000")
+def pipeline():
+    @task(task_id="step_preprocess")
+    def step_preprocess() -> dict:
+        """Ingest, preprocess (creates drifted copies), and save train/test CSVs."""
+        import pandas as pd  # local import keeps DAG parse light
 
-    # ---------- Tasks ----------
+        df = ingest_data(source_path=RAW_SOURCE)
 
-    @task()
-    def step_preprocess() -> Dict[str, str]:
-        """
-        Load and split raw data -> persist train/test pickles.
-        Also export test CSVs for Evidently and create a synthetic drifted copy.
-        """
-        import numpy as np
+        (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            _X_train_drifted,
+            _y_train_drifted,
+            _X_test_drifted,
+            _y_test_drifted,
+        ) = preprocess_data(df, target_col=TARGET_COL)
 
-        raw_path = "/app/data/raw/data-ori.csv"
-        result = preprocess_data(raw_path)
-
-        # --- handle various return shapes from preprocess_data ---
-        if isinstance(result, dict):
-            # Expecting keys like 'train'/'test' (adjust if yours differ)
-            train = (
-                result.get("train") or result.get("X_train") or result.get("train_df")
-            )
-            test = result.get("test") or result.get("X_test") or result.get("test_df")
-            if train is None or test is None:
-                raise ValueError(
-                    f"preprocess_data returned dict without train/test keys: {list(result.keys())}"
-                )
-        elif isinstance(result, (list, tuple)):
-            # Take the first two items as train/test; ignore extras
-            if len(result) < 2:
-                raise ValueError(
-                    f"preprocess_data returned {len(result)} values, need at least 2 (train, test)"
-                )
-            train, test = result[0], result[1]
-        else:
-            raise TypeError(f"preprocess_data returned unexpected type: {type(result)}")
-
-        # Persist pickles
-        train_path = "/app/data/train.pkl"
-        test_path = "/app/data/test.pkl"
-        train.to_pickle(train_path)
-        test.to_pickle(test_path)
-
-        # Export test CSV for Evidently
-        test_csv_path = "/app/data/test.csv"
-        test.to_csv(test_csv_path, index=False)
-
-        # Create a synthetic drifted copy
-        drift = test.copy()
-        np.random.seed(42)
-
-        # 1) Numeric drift: scale + small Gaussian noise
-        num_cols = drift.select_dtypes(include=["number"]).columns.tolist()
-        if num_cols:
-            for c in num_cols:
-                std = float(drift[c].std() or 0.0)
-                noise = np.random.normal(
-                    0.0, 0.05 * (std if std > 0 else 1.0), size=len(drift)
-                )
-                drift[c] = drift[c] * 1.2 + noise
-
-        # 2) Categorical drift: flip ~10% of first categorical column, if any
-        cat_cols = [
-            c
-            for c in drift.select_dtypes(include=["object", "category"]).columns
-            if c.lower() not in {"source", "target", "label", "y"}
-        ]
-        if cat_cols:
-            c = cat_cols[0]
-            vals = drift[c].dropna().unique().tolist()
-            if len(vals) > 1:
-                idx = np.random.rand(len(drift)) < 0.10
-                alt = {v: vals[(i + 1) % len(vals)] for i, v in enumerate(vals)}
-                drift.loc[idx & drift[c].notna(), c] = drift.loc[
-                    idx & drift[c].notna(), c
-                ].map(lambda v: alt.get(v, v))
-
-        drift_csv_path = "/app/data/drifted_test.csv"
-        drift.to_csv(drift_csv_path, index=False)
+        os.makedirs("data", exist_ok=True)
+        train_path = "data/train.csv"
+        test_path = "data/test.csv"
+        pd.concat([X_train, y_train.rename(TARGET_COL)], axis=1).to_csv(
+            train_path, index=False
+        )
+        pd.concat([X_test, y_test.rename(TARGET_COL)], axis=1).to_csv(
+            test_path, index=False
+        )
 
         return {
             "train_path": train_path,
             "test_path": test_path,
-            "test_csv_path": test_csv_path,
-            "drift_csv_path": drift_csv_path,
+            "drifted_train_path": "data/drifted_train.csv",
+            "drifted_test_path": "data/drifted_test.csv",
         }
 
-    @task()
-    def step_engineer(paths: Dict[str, str]) -> Dict[str, str]:
-        """Feature engineering -> persist engineered pickles."""
-        train = pd.read_pickle(paths["train_path"])
-        test = pd.read_pickle(paths["test_path"])
-
-        train_fe = engineer_features(train)
-        test_fe = engineer_features(test)
-
-        train_feat_path = "/app/data/train_feat.pkl"
-        test_feat_path = "/app/data/test_feat.pkl"
-        train_fe.to_pickle(train_feat_path)
-        test_fe.to_pickle(test_feat_path)
-
-        return {"train_feat_path": train_feat_path, "test_feat_path": test_feat_path}
-
-    @task()
-    def step_train(paths: Dict[str, str]) -> str:
-        """Train baseline model -> persist model.pkl and log to MLflow."""
-        import os
+    @task(task_id="step_train")
+    def step_train(paths: dict) -> dict:
+        """Train on train.csv, log model to MLflow, return {'model_uri': ...}."""
+        import pandas as pd
         import mlflow
-        from mlflow import sklearn as mlflow_sklearn
+        import mlflow.sklearn
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
-        mlflow.set_experiment("ml_pipeline")  # optional but nice
+        mlflow.set_tracking_uri(MLFLOW_URI)
 
-        os.makedirs("/app/models", exist_ok=True)
+        df_train = pd.read_csv(paths["train_path"])
+        X_train = df_train.drop(columns=[TARGET_COL])
+        y_train = df_train[TARGET_COL]
 
-        train = pd.read_pickle(paths["train_feat_path"])
-        model_type = "logreg"
-        model, train_info = train_model(train, model_type=model_type)
+        model = train_model(X_train, y_train)
 
-        model_path = "/app/models/model.pkl"
-        save_model(model, model_path)
-
-        # Log a run
         with mlflow.start_run(run_name="train"):
-            mlflow.log_param("model_type", model_type)
-            # If you have anything useful in train_info, log it:
-            if isinstance(train_info, dict):
-                for k, v in train_info.items():
-                    if isinstance(v, (int, float, str, bool)):
-                        mlflow.log_param(f"train_{k}", v)
-            mlflow.log_artifact(model_path, artifact_path="artifacts")
-            # Or log as a proper MLflow model (sklearn example):
-            try:
-                mlflow_sklearn.log_model(model, artifact_path="sklearn_model")
-            except Exception:
-                pass  # keep it optional
+            mlflow.sklearn.log_model(model, artifact_path="model")
+            model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
 
-        return model_path
+        return {"model_uri": model_uri}
 
-    @task()
-    def step_evaluate(paths: Dict[str, str], model_path: str) -> None:
-        """Evaluate model -> write metrics report."""
-        test = pd.read_pickle(paths["test_feat_path"])
-        model = load(model_path)
-        evaluate_model(model, test, report_path="/app/reports/metrics.txt")
+    @task(task_id="step_evaluate")
+    def step_evaluate(paths: dict, train_out: dict) -> dict:
+        """Load model via MLflow URI and evaluate on test.csv; log metrics."""
+        import pandas as pd
+        import mlflow
+        import mlflow.sklearn
 
-    @task()
-    def step_drift_detection(paths: Dict[str, str]) -> Dict[str, Any]:
+        mlflow.set_tracking_uri(MLFLOW_URI)
+
+        df_test = pd.read_csv(paths["test_path"])
+        X_test = df_test.drop(columns=[TARGET_COL])
+        y_test = df_test[TARGET_COL]
+
+        model = mlflow.sklearn.load_model(train_out["model_uri"])
+        metrics = evaluate_model(model, X_test, y_test)
+
+        with mlflow.start_run(run_name="evaluate"):
+            for k, v in metrics.items():
+                try:
+                    mlflow.log_metric(k, float(v))
+                except Exception:
+                    pass
+
+        return metrics
+
+    @task(task_id="drift_detection")
+    def drift_detection_task(paths: dict) -> bool:
         """
-        Run drift detection on test CSVs produced by step_preprocess()
-        and log status to MLflow.
+        Run drift twice (test vs drifted_test, train vs drifted_train),
+        log params + full JSON artifacts, and raise on drift.
         """
-        import os
-
-        ref_path = paths.get("test_csv_path", "/app/data/test.csv")
-        cur_path = paths.get("drift_csv_path", "/app/data/drifted_test.csv")
-
-        if not os.path.exists(ref_path):
-            raise FileNotFoundError(f"Missing reference CSV: {ref_path}")
-        if not os.path.exists(cur_path):
-            raise FileNotFoundError(f"Missing current CSV: {cur_path}")
-
-        # If your target column is named differently, set it here
-        results = detect_drift(
-            reference_csv=ref_path,
-            current_csv=cur_path,
-            target="SOURCE",  # optional, ignored unless used in drift_detection.py
-            report_dir="/app/reports",  # ensures the JSON lands in your mounted reports volume
-        )
-
-        # Ensure metrics are captured under a run
-        with mlflow.start_run(run_name="drift_detection", nested=True):
-            mlflow.log_param("test_drift_detected", results.get("drift_detected"))
-            mlflow.log_param(
-                "test_overall_drift_share", results.get("overall_drift_share")
-            )
-
-        return {
-            "drift_detected": bool(results.get("drift_detected", False)),
-            "overall_drift_score": float(results.get("overall_drift_score", 0.0)),
-            "report_path": results.get("report_path"),
-        }
-
-    @task.branch(task_id="branch_on_drift")
-    def branch_on_drift(drift_result: Dict[str, Any]) -> str:
-        return "retrain_model" if drift_result.get("drift_detected") else "no_retrain"
-
-    @task(task_id="retrain_model")
-    def step_retrain(paths: Dict[str, str]) -> str:
+        import json
+        import tempfile
         import mlflow
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
-        train = pd.read_pickle(paths["train_feat_path"])
-        model, _ = train_model(train, model_type="logreg")
-        model_path = "/app/models/model_retrained.pkl"
-        save_model(model, model_path)
-        return model_path
+        mlflow.set_tracking_uri(MLFLOW_URI)
 
-    no_retrain = EmptyOperator(task_id="no_retrain")
+        with mlflow.start_run(run_name="drift_detection"):
+            # Test vs drifted_test
+            test_drift = detect_drift(paths["test_path"], paths["drifted_test_path"])
+            mlflow.log_param("test_drift_detected", test_drift["drift_detected"])
+            mlflow.log_param(
+                "test_overall_drift_score", test_drift["overall_drift_score"]
+            )
+            with tempfile.TemporaryDirectory() as td:
+                p = os.path.join(td, "drift_report_test.json")
+                with open(p, "w") as f:
+                    json.dump(test_drift, f, indent=2)
+                mlflow.log_artifact(p, artifact_path="drift")
+            if test_drift["drift_detected"]:
+                raise ValueError(
+                    "Data drift detected in TEST set! Model retraining required."
+                )
 
-    pipeline_complete = EmptyOperator(
-        task_id="pipeline_complete",
-        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
-    )
+            # Train vs drifted_train
+            if os.path.exists(paths["drifted_train_path"]):
+                train_drift = detect_drift(
+                    paths["train_path"], paths["drifted_train_path"]
+                )
+                mlflow.log_param("train_drift_detected", train_drift["drift_detected"])
+                mlflow.log_param(
+                    "train_overall_drift_score", train_drift["overall_drift_score"]
+                )
+                with tempfile.TemporaryDirectory() as td:
+                    p = os.path.join(td, "drift_report_train.json")
+                    with open(p, "w") as f:
+                        json.dump(train_drift, f, indent=2)
+                    mlflow.log_artifact(p, artifact_path="drift")
+                if train_drift["drift_detected"]:
+                    raise ValueError(
+                        "Data drift detected in TRAIN set! Model retraining required."
+                    )
 
-    # ---------- Orchestration ----------
-    raw_paths = step_preprocess()
-    feat_paths = step_engineer(raw_paths)
-    model_file = step_train(feat_paths)
-    step_evaluate(feat_paths, model_file)
+        return True
 
-    drift_result = step_drift_detection(raw_paths)
-    next_task = branch_on_drift(drift_result)
-
-    retrain_task = step_retrain(feat_paths)
-    next_task >> [retrain_task, no_retrain]
-    [retrain_task, no_retrain] >> pipeline_complete
+    # Orchestration
+    paths = step_preprocess()
+    train_out = step_train(paths)
+    _ = step_evaluate(paths, train_out)
+    _ = drift_detection_task(paths)
 
 
-ml_pipeline()
+dag = pipeline()

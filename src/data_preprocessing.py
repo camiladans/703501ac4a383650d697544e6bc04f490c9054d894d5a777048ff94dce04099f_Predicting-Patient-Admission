@@ -13,12 +13,17 @@ Handles raw data cleaning and normalization steps:
 
 from __future__ import annotations
 
+import os
+import logging
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -26,124 +31,45 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def flag_out_of_range(df: pd.DataFrame) -> pd.DataFrame:
     """Add boolean flags for common lab ranges (only when columns exist)."""
-    df = df.copy()
-
-    if "SEX" in df and "HAEMATOCRIT" in df:
-        df["is_hct_normal"] = (
-            (df["SEX"] == "M") & df["HAEMATOCRIT"].between(40.0, 52.0)
-        ) | ((df["SEX"] == "F") & df["HAEMATOCRIT"].between(37.0, 47.0))
-
-    if "SEX" in df and "HAEMOGLOBINS" in df:
-        df["is_hb_normal"] = (
-            (df["SEX"] == "M") & df["HAEMOGLOBINS"].between(13.0, 17.0)
-        ) | ((df["SEX"] == "F") & df["HAEMOGLOBINS"].between(12.0, 16.0))
-
-    if "SEX" in df and "ERYTHROCYTE" in df:
-        df["is_rbc_normal"] = (
-            (df["SEX"] == "M") & df["ERYTHROCYTE"].between(4.5, 6.1)
-        ) | ((df["SEX"] == "F") & df["ERYTHROCYTE"].between(4.0, 5.4))
-
-    if "LEUCOCYTE" in df:
-        df["is_wbc_normal"] = df["LEUCOCYTE"].between(4.0, 10.8)
-    if "THROMBOCYTE" in df:
-        df["is_plt_normal"] = df["THROMBOCYTE"].between(150, 400)
-    if "MCH" in df:
-        df["is_mch_normal"] = df["MCH"].between(27.0, 33.0)
-    if "MCHC" in df:
-        df["is_mchc_normal"] = df["MCHC"].between(31.5, 37.0)
-    if "MCV" in df:
-        df["is_mcv_normal"] = df["MCV"].between(80, 98)
-
-    return df
-
-
-# ---------------------------
-# Helpers for drift creation
-# ---------------------------
-def _infer_cols(
-    df: pd.DataFrame, target_col: Optional[str] = None
-) -> Tuple[list[str], list[str]]:
-    exclude = {target_col} if target_col else set()
-    num_cols = [
-        c
-        for c in df.columns
-        if c not in exclude and pd.api.types.is_numeric_dtype(df[c])
-    ]
-    cat_cols = [
-        c
-        for c in df.columns
-        if c not in exclude and not pd.api.types.is_numeric_dtype(df[c])
-    ]
-    return num_cols, cat_cols
-
-
-def _drift_numeric(
-    df: pd.DataFrame,
-    num_cols: Sequence[str],
-    train_std: Dict[str, float],
-    rng: np.random.Generator,
-) -> pd.DataFrame:
     out = df.copy()
-    for col in num_cols:
-        if col not in out.columns:
-            continue
-        # 50/50: multiply-by-1.2 vs add Gaussian noise N(0, 0.1*std_train)
-        if rng.random() < 0.5:
-            out[col] = out[col] * 1.2
-        else:
-            std = float(train_std.get(col, float(out[col].std() or 0.0)))
-            sigma = 0.1 * std
-            if sigma == 0:
-                out[col] = out[col] * 1.2
-            else:
-                out[col] = out[col] + rng.normal(0.0, sigma, size=len(out))
+
+    if "SEX" in out and "HAEMATOCRIT" in out:
+        out["is_hct_normal"] = (
+            (out["SEX"] == "M") & out["HAEMATOCRIT"].between(40.0, 52.0)
+        ) | ((out["SEX"] == "F") & out["HAEMATOCRIT"].between(37.0, 47.0))
+
+    if "SEX" in out and "HAEMOGLOBINS" in out:
+        out["is_hb_normal"] = (
+            (out["SEX"] == "M") & out["HAEMOGLOBINS"].between(13.0, 17.0)
+        ) | ((out["SEX"] == "F") & out["HAEMOGLOBINS"].between(12.0, 16.0))
+
+    if "SEX" in out and "ERYTHROCYTE" in out:
+        out["is_rbc_normal"] = (
+            (out["SEX"] == "M") & out["ERYTHROCYTE"].between(4.5, 6.1)
+        ) | ((out["SEX"] == "F") & out["ERYTHROCYTE"].between(4.0, 5.4))
+
+    if "LEUCOCYTE" in out:
+        out["is_wbc_normal"] = out["LEUCOCYTE"].between(4.0, 10.8)
+    if "THROMBOCYTE" in out:
+        out["is_plt_normal"] = out["THROMBOCYTE"].between(150, 400)
+    if "MCH" in out:
+        out["is_mch_normal"] = out["MCH"].between(27.0, 33.0)
+    if "MCHC" in out:
+        out["is_mchc_normal"] = out["MCHC"].between(31.5, 37.0)
+    if "MCV" in out:
+        out["is_mcv_normal"] = out["MCV"].between(80, 98)
+
     return out
 
 
-def _drift_categorical(
-    df: pd.DataFrame,
-    cat_cols: Sequence[str],
-    rng: np.random.Generator,
-    flip_low: float = 0.10,
-    flip_high: float = 0.15,
-) -> pd.DataFrame:
-    out = df.copy()
-    for col in cat_cols:
-        if col not in out.columns:
-            continue
-        s = out[col].astype(object)
-        cats = pd.Series(s.dropna().unique())
-        if len(cats) < 2:
-            continue
-
-        flip_rate = rng.uniform(flip_low, flip_high)
-        idx = np.where(s.notna())[0]
-        if len(idx) == 0:
-            continue
-        n_flip = int(np.floor(flip_rate * len(idx)))
-        if n_flip <= 0:
-            continue
-
-        flip_rows = rng.choice(idx, size=n_flip, replace=False)
-        for r in flip_rows:
-            cur = s.iat[r]
-            choices = cats[cats != cur]
-            if len(choices) == 0:
-                continue
-            s.iat[r] = rng.choice(choices.values)
-        out[col] = s
-    return out
-
-
-# --------------------------------
-# Main entry: preprocessing + drift
-# --------------------------------
 def preprocess_data(
-    path: str,
-    target_col: Optional[str] = None,
+    df: pd.DataFrame,
+    target_col: str,
+    categorical_cols: Optional[Sequence[str]] = None,
+    numeric_cols: Optional[Sequence[str]] = None,
     test_size: float = 0.2,
     random_state: int = 42,
-    stratify: bool = True,
+    save_dir: str = "data",
 ) -> Tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -155,82 +81,126 @@ def preprocess_data(
     pd.Series,
 ]:
     """
-    Reads CSV at `path`, flags lab-value ranges, splits into train/test,
-    creates ONE drifted copy, and saves outputs to data/.
+    Preprocess dataset into train/test splits, then synthesize drifted variants.
 
-    Numeric drift:
-      - multiply by 1.2 OR add N(0, 0.1*std_train) noise (std from TRAIN)
-    Categorical drift:
-      - randomly flip 10–15% of non-null values to a different category
+    Returns:
+      (X_train, X_test, y_train, y_test,
+       X_train_drifted, y_train_drifted, X_test_drifted, y_test_drifted)
 
     Saves:
-      data/train.csv
-      data/test.csv
-      data/drifted_train.csv
-      data/drifted_test.csv
-
-    Returns
-    -------
-    (X_train, X_test, y_train, y_test,
-     X_train_drifted, y_train_drifted, X_test_drifted, y_test_drifted)
+      drifted_train.csv and drifted_test.csv under `save_dir`.
     """
-    rng = np.random.default_rng(seed=random_state)
+    rng = np.random.default_rng(random_state)
+    df = df.copy()
 
-    df = pd.read_csv(path, encoding_errors="ignore")
+    if target_col not in df.columns:
+        raise ValueError(f"target_col '{target_col}' not in DataFrame")
+
+    # Optional: flag ranges (safe if columns absent)
     df = flag_out_of_range(df)
 
-    # Split features/target if provided
-    if target_col and target_col in df.columns:
-        y = df[target_col]
-        X = df.drop(columns=[target_col])
-    else:
-        y = pd.Series([None] * len(df), name="target")
-        X = df
+    y = df[target_col]
+    X = df.drop(columns=[target_col])
 
-    # Train/test split (optionally stratified on y when valid)
-    strat = y if (stratify and y.nunique(dropna=True) > 1) else None
+    if categorical_cols is None:
+        categorical_cols = X.select_dtypes(
+            include=["object", "category", "bool"]
+        ).columns.tolist()
+    if numeric_cols is None:
+        numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+
+    logger.info(
+        "Detected %d numeric and %d categorical features.",
+        len(numeric_cols),
+        len(categorical_cols),
+    )
+
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
         test_size=test_size,
         random_state=random_state,
-        stratify=strat,
-        shuffle=True,
+        stratify=y if y.nunique() <= 20 else None,
     )
 
-    # Save baseline splits
-    pd.concat([X_train, y_train], axis=1).to_csv(DATA_DIR / "train.csv", index=False)
-    pd.concat([X_test, y_test], axis=1).to_csv(DATA_DIR / "test.csv", index=False)
+    # --- Numeric drift (σ = 0.1 * std(train); or ×1.2) ---
+    if numeric_cols:
+        train_std = X_train[numeric_cols].std(ddof=0).replace({0.0: np.nan})
+        # fallback sigma if any col has NaN std
+        if len(numeric_cols):
+            overall_std = float(np.nanstd(X_train[numeric_cols].to_numpy()))
+            fallback_sigma = (
+                1.0 if not np.isfinite(overall_std) else max(overall_std, 1e-12)
+            )
+        else:
+            fallback_sigma = 1.0
+        sigma_map = (0.1 * train_std).fillna(0.1 * fallback_sigma)
+        mult_mask = pd.Series(rng.random(len(numeric_cols)) < 0.5, index=numeric_cols)
+    else:
+        sigma_map = pd.Series(dtype=float)
+        mult_mask = pd.Series(dtype=bool)
 
-    # Infer feature types (exclude target)
-    tmp_with_target = pd.concat(
-        [X_train, y_train.rename(target_col or "target")], axis=1
-    )
-    num_cols, cat_cols = _infer_cols(tmp_with_target, target_col=target_col)
+    def apply_numeric_drift(df_numeric: pd.DataFrame) -> pd.DataFrame:
+        out = df_numeric.copy()
+        for col in numeric_cols or []:
+            col_vals = out[col].to_numpy(dtype=float, copy=True)
+            if mult_mask.get(col, False):
+                col_vals = np.where(np.isnan(col_vals), col_vals, col_vals * 1.2)
+            else:
+                sigma = float(sigma_map.get(col, 0.1))
+                noise = rng.normal(0.0, sigma, size=col_vals.shape)
+                col_vals = np.where(np.isnan(col_vals), col_vals, col_vals + noise)
+            out[col] = col_vals
+        return out
 
-    # Train std per numeric col for noise scaling
-    train_std = {c: float(X_train[c].std() or 0.0) for c in num_cols}
+    # --- Categorical drift (flip 10–15% uniformly to a different class) ---
+    cat_domains = {
+        c: pd.Index(X_train[c].dropna().unique()) for c in (categorical_cols or [])
+    }
+    flip_ratio = float(rng.uniform(0.10, 0.15))
 
-    # ------- Single drift pass -------
-    X_train_drifted = _drift_numeric(X_train, num_cols, train_std, rng)
-    X_train_drifted = _drift_categorical(X_train_drifted, cat_cols, rng)
+    def apply_categorical_drift(df_cat: pd.DataFrame) -> pd.DataFrame:
+        out = df_cat.copy()
+        for col in categorical_cols or []:
+            dom = cat_domains.get(col, pd.Index([]))
+            if len(dom) <= 1:
+                continue
+            mask_non_null = out[col].notna().to_numpy()
+            idx = np.flatnonzero(mask_non_null)
+            if idx.size == 0:
+                continue
+            k = max(1, int(np.floor(flip_ratio * idx.size)))
+            flip_idx = rng.choice(idx, size=min(k, idx.size), replace=False)
+            vals = out[col].astype(object).to_numpy(copy=True)
+            for i in flip_idx:
+                choices = dom[dom != vals[i]]
+                if len(choices) > 0:
+                    vals[i] = rng.choice(choices.to_numpy())
+            out[col] = vals
+        return out
 
-    X_test_drifted = _drift_numeric(X_test, num_cols, train_std, rng)
-    X_test_drifted = _drift_categorical(X_test_drifted, cat_cols, rng)
+    def drift_frame(X_like: pd.DataFrame) -> pd.DataFrame:
+        Xd = X_like.copy()
+        if numeric_cols:
+            Xd.update(apply_numeric_drift(Xd[numeric_cols]))
+        if categorical_cols:
+            Xd.update(apply_categorical_drift(Xd[categorical_cols]))
+        return Xd
 
-    # Labels are NOT drifted; make explicit drifted label variables
-    y_train_drifted = y_train.copy()
-    y_test_drifted = y_test.copy()
+    X_train_drifted = drift_frame(X_train)
+    X_test_drifted = drift_frame(X_test)
+    y_train_drifted, y_test_drifted = y_train.copy(), y_test.copy()
 
-    # Save drifted versions
-    drifted_train_df = X_train_drifted.copy()
-    drifted_test_df = X_test_drifted.copy()
-    drifted_train_df[(target_col or "target")] = y_train_drifted.values
-    drifted_test_df[(target_col or "target")] = y_test_drifted.values
-    drifted_train_df.to_csv(DATA_DIR / "drifted_train.csv", index=False)
-    drifted_test_df.to_csv(DATA_DIR / "drifted_test.csv", index=False)
+    # Save drifted datasets (features + target)
+    os.makedirs(save_dir, exist_ok=True)
+    drifted_train = X_train_drifted.copy()
+    drifted_train[target_col] = y_train_drifted
+    drifted_test = X_test_drifted.copy()
+    drifted_test[target_col] = y_test_drifted
+    drifted_train.to_csv(os.path.join(save_dir, "drifted_train.csv"), index=False)
+    drifted_test.to_csv(os.path.join(save_dir, "drifted_test.csv"), index=False)
+    logger.info("Saved drifted_train.csv and drifted_test.csv to %s", save_dir)
 
-    # Return tuple with explicit drifted label variables
     return (
         X_train,
         X_test,

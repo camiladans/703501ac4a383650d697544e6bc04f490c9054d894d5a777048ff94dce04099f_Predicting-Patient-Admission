@@ -3,10 +3,11 @@ from __future__ import annotations
 
 """
 Airflow DAG: ml_pipeline_dag
+
 Flow:
   1) step_preprocess  -> ingest, preprocess, save data/train.csv & data/test.csv
-  2) step_train       -> train on train.csv, log model to MLflow, return model_uri
-  3) step_evaluate    -> load model from model_uri, evaluate on test.csv, log metrics
+  2) step_train       -> train on train.csv, log model to MLflow (pyfunc), return model_uri
+  3) step_evaluate    -> load model via model_uri (pyfunc), evaluate on test.csv, log metrics
   4) drift_detection  -> detect drift (test vs drifted_test, train vs drifted_train), log + raise if drift
 """
 
@@ -19,24 +20,24 @@ import sys
 # --- third-party ---
 from airflow.decorators import dag, task
 
-# Ensure project modules are importable
+# Make project modules importable inside the container
 if "/app/src" not in sys.path:
     sys.path.append("/app/src")  # noqa: E402
 
 # --- first-party (project) ---
 from src.data_ingestion import ingest_data  # noqa: E402
 from src.data_preprocessing import preprocess_data  # noqa: E402
-from src.model_training import train_model  # noqa: E402
+from src.model_training import train_model, log_model_to_mlflow  # noqa: E402
 from src.evaluation import evaluate_model  # noqa: E402
 from src.drift_detection import detect_drift  # noqa: E402
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.WARNING)
 
-
+# In Docker, prefer service name "mlflow" rather than localhost
 MLFLOW_URI = "http://mlflow:5000"
 TARGET_COL = "SOURCE"
-RAW_SOURCE = "/app/data/raw/data-ori.csv"  # inside container
+RAW_SOURCE = "/app/data/raw/data-ori.csv"  # path inside container
 
 
 @dag(
@@ -76,6 +77,8 @@ def pipeline():
             test_path, index=False
         )
 
+        # NOTE: If preprocess_data already wrote drifted CSVs, these paths should exist.
+        # Otherwise, ensure  preprocess writes them (or adjust drift task below).
         return {
             "train_path": train_path,
             "test_path": test_path,
@@ -85,31 +88,42 @@ def pipeline():
 
     @task(task_id="step_train")
     def step_train(paths: dict) -> dict:
-        """Train on train.csv, log model to MLflow, return {'model_uri': ...}."""
+        """
+        Train on train.csv, log model to MLflow (pyfunc with threshold + artifacts),
+        and return {'model_uri': ..., 'train_metrics': {...}}.
+        """
         import pandas as pd
-        import mlflow
-        import mlflow.sklearn
-
-        mlflow.set_tracking_uri(MLFLOW_URI)
 
         df_train = pd.read_csv(paths["train_path"])
-        X_train = df_train.drop(columns=[TARGET_COL])
-        y_train = df_train[TARGET_COL]
 
-        model = train_model(X_train, y_train)
+        # Upgraded training returns: best_model, metrics (incl. threshold), feature_names
+        best_model, metrics, feature_names = train_model(
+            df_train,
+            model_type="rf",  # or "logreg"
+            target_recall=0.90,  # tune to your needs
+            random_state=42,
+        )
 
-        with mlflow.start_run(run_name="train"):
-            mlflow.sklearn.log_model(model, artifact_path="model")
-            model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
+        # Log via custom PyFunc wrapper so threshold + feature list travel with the model
+        run_id = log_model_to_mlflow(
+            best_model,
+            tracking_uri=MLFLOW_URI,
+            artifact_dir="models_export",
+            preprocessor=None,  # pass actual preprocessor
+            feature_names=feature_names,
+            metrics=metrics,
+            experiment="patient_admission",
+            tags={"model_type": "rf", "target": "IN"},
+        )
+        model_uri = f"runs:/{run_id}/model"  # pyfunc artifact path
 
-        return {"model_uri": model_uri}
+        return {"model_uri": model_uri, "train_metrics": metrics}
 
     @task(task_id="step_evaluate")
     def step_evaluate(paths: dict, train_out: dict) -> dict:
-        """Load model via MLflow URI and evaluate on test.csv; log metrics."""
+        """Load model via MLflow URI (pyfunc) and evaluate on test.csv; log metrics."""
         import pandas as pd
         import mlflow
-        import mlflow.sklearn
 
         mlflow.set_tracking_uri(MLFLOW_URI)
 
@@ -117,10 +131,14 @@ def pipeline():
         X_test = df_test.drop(columns=[TARGET_COL])
         y_test = df_test[TARGET_COL]
 
-        model = mlflow.sklearn.load_model(train_out["model_uri"])
+        # Load the pyfunc model (enforces feature order + threshold)
+        model = mlflow.pyfunc.load_model(train_out["model_uri"])
+
+        # evaluate_model should call model.predict(X) internally (works with pyfunc)
         metrics = evaluate_model(model, X_test, y_test)
 
         with mlflow.start_run(run_name="evaluate"):
+            # Log scalar metrics (ignore dicts/lists safely)
             for k, v in metrics.items():
                 try:
                     mlflow.log_metric(k, float(v))
@@ -146,7 +164,7 @@ def pipeline():
             test_drift = detect_drift(paths["test_path"], paths["drifted_test_path"])
             mlflow.log_param("test_drift_detected", test_drift["drift_detected"])
             mlflow.log_param(
-                "test_overall_drift_score", test_drift["overall_drift_score"]
+                "test_overall_drift_score", test_drift.get("overall_drift_score", None)
             )
             with tempfile.TemporaryDirectory() as td:
                 p = os.path.join(td, "drift_report_test.json")
@@ -158,14 +176,15 @@ def pipeline():
                     "Data drift detected in TEST set! Model retraining required."
                 )
 
-            # Train vs drifted_train
+            # Train vs drifted_train (if available)
             if os.path.exists(paths["drifted_train_path"]):
                 train_drift = detect_drift(
                     paths["train_path"], paths["drifted_train_path"]
                 )
                 mlflow.log_param("train_drift_detected", train_drift["drift_detected"])
                 mlflow.log_param(
-                    "train_overall_drift_score", train_drift["overall_drift_score"]
+                    "train_overall_drift_score",
+                    train_drift.get("overall_drift_score", None),
                 )
                 with tempfile.TemporaryDirectory() as td:
                     p = os.path.join(td, "drift_report_train.json")

@@ -1,58 +1,34 @@
 # src/drift_detection.py
 from __future__ import annotations
-from typing import Dict, List, Tuple, Iterable, Optional
+
+import os
+import json
+from typing import Dict, Any, List, Tuple, Optional
+
 import pandas as pd
+from evidently import Report, Dataset, DataDefinition
+from evidently.presets import DataDriftPreset
 
-from evidently import Report
+import logging
 
-# 0.7+: Dataset/DataDefinition present; older versions won't have these
-try:
-    from evidently import Dataset, DataDefinition  # 0.7.x
-except Exception:
-    Dataset = DataDefinition = None  # type: ignore
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Prefer preset if available; else fall back to dataset-level metric
-try:
-    from evidently.metric_preset import (
-        DataDriftPreset,
-    )  # 0.4–0.6 (sometimes present in 0.7)
-
-    _USE_PRESET = True
-except Exception:
-    from evidently.metrics.data_drift.dataset_drift_metric import DatasetDriftMetric
-
-    _USE_PRESET = False
-
-_DEFAULT_EXCLUDE = {
-    "SOURCE",
-    "target",
-    "label",
-    "y",
-    "prediction",
-    "id",
-    "gcr_persistent_id",
-    "header_tran_key",
-}
+_EXCLUDE = {"SOURCE", "target", "label", "y", "prediction", "id"}
 
 
-def _align_cols(
-    ref: pd.DataFrame, cur: pd.DataFrame
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    shared = [c for c in ref.columns if c in cur.columns]
-    return ref.loc[:, shared].copy(), cur.loc[:, shared].copy()
+def _align(ref: pd.DataFrame, cur: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    common = [c for c in ref.columns if c in cur.columns]
+    return ref[common].copy(), cur[common].copy()
 
 
-def _choose_feature_columns(df: pd.DataFrame, exclude: Iterable[str]) -> List[str]:
-    # Drop explicit excludes and datetime-like cols
-    excl = set(x.lower() for x in exclude)
-    keep = [c for c in df.columns if c.lower() not in excl]
-    dt_cols = set(
-        df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, tz]"]).columns
-    )
-    return [c for c in keep if c not in dt_cols]
+def _feature_cols(df: pd.DataFrame) -> List[str]:
+    keep = [c for c in df.columns if c not in _EXCLUDE]
+    dt = set(df.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns)
+    return [c for c in keep if c not in dt]
 
 
-def _coerce_object_to_string(df: pd.DataFrame) -> pd.DataFrame:
+def _coerce_objects_to_string(df: pd.DataFrame) -> pd.DataFrame:
     obj = df.select_dtypes(include=["object"]).columns
     if len(obj):
         df = df.copy()
@@ -61,41 +37,82 @@ def _coerce_object_to_string(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def detect_drift(
-    ref_csv: str,
-    cur_csv: str,
-    exclude_cols: Optional[Iterable[str]] = None,
-) -> Dict[str, object]:
-    ref = pd.read_csv(ref_csv)
-    cur = pd.read_csv(cur_csv)
+    reference_csv: str,
+    current_csv: str,
+    *,
+    target: Optional[str] = None,  # accepted but not required
+    report_dir: str = "/app/reports",
+    report_basename: str = "drift_report.json",
+) -> Dict[str, Any]:
+    """
+    Run Evidently DataDriftPreset on two CSVs.
+    Returns a compact dict suitable for Airflow XCom:
+      - drift_detected: bool
+      - overall_drift_score: float   (alias of share_of_drifted_columns)
+      - share_of_drifted_columns: float
+      - report_path: str (JSON with full Evidently output)
+    """
+    logger.info(f"Loading reference: {reference_csv}")
+    logger.info(f"Loading current:   {current_csv}")
+    ref_df = pd.read_csv(reference_csv)
+    cur_df = pd.read_csv(current_csv)
 
-    # Align columns & sanitize dtypes
-    ref, cur = _align_cols(ref, cur)
-    features = _choose_feature_columns(ref, exclude_cols or _DEFAULT_EXCLUDE)
-    ref = _coerce_object_to_string(ref[features])
-    cur = _coerce_object_to_string(cur[features])
+    # Align, select features
+    ref_df, cur_df = _align(ref_df, cur_df)
+    cols = _feature_cols(ref_df)
+    if cols:
+        ref_df = _coerce_objects_to_string(ref_df[cols])
+        cur_df = _coerce_objects_to_string(cur_df[cols])
 
-    metrics = [DataDriftPreset()] if _USE_PRESET else [DatasetDriftMetric()]
+    # Build Evidently datasets (DataDefinition left empty for auto-infer)
+    data_def = DataDefinition()
+    ref_data = Dataset.from_pandas(ref_df, data_definition=data_def)
+    cur_data = Dataset.from_pandas(cur_df, data_definition=data_def)
 
-    if Dataset is not None:
-        # Evidently 0.7+ path
-        ref_data = Dataset.from_pandas(ref, data_definition=DataDefinition())
-        cur_data = Dataset.from_pandas(cur, data_definition=DataDefinition())
-        result = Report(metrics).run(reference_data=ref_data, current_data=cur_data)
-        res = result.as_dict()
-    else:
-        # 0.4–0.6 path
-        report = Report(metrics)
-        report.run(reference_data=ref, current_data=cur)
-        res = report.as_dict()
+    logger.info("Running Evidently DataDriftPreset...")
+    report = Report(metrics=[DataDriftPreset()])
+    report.run(reference_data=ref_data, current_data=cur_data)
+    res = report.as_dict()
 
-    # Safely extract dataset-level result
-    metrics_list = res.get("metrics", [])
-    if not metrics_list:
-        return {"drift_detected": False, "overall_drift_share": 0.0, "raw": res}
+    # Also save optional HTML if requested
+    html_path = os.getenv("EVIDENTLY_HTML_PATH")
+    if html_path:
+        try:
+            report.save_html(html_path)
+            logger.info(f"Evidently HTML saved to: {html_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save Evidently HTML to {html_path}: {e}")
 
-    block = metrics_list[0].get("result", {})
-    return {
-        "drift_detected": bool(block.get("dataset_drift", False)),
-        "overall_drift_share": float(block.get("share_of_drifted_columns", 0.0)),
-        "raw": res,
+    # Extract summary safely
+    try:
+        block = res["metrics"][0]["result"]
+    except Exception:
+        logger.error("Unexpected Evidently result shape. Keys: %s", list(res.keys()))
+        raise
+
+    drift_detected = bool(block.get("dataset_drift"))
+    share = float(block.get("share_of_drifted_columns", 0.0))
+
+    # Persist JSON report (so XCom stays tiny and MLflow can log it as artifact)
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, report_basename)
+    try:
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(res, f)
+        logger.info(f"Evidently JSON saved to: {report_path}")
+    except Exception as e:
+        logger.warning(f"Failed to write Evidently JSON to {report_path}: {e}")
+
+    out = {
+        "drift_detected": drift_detected,
+        "overall_drift_score": share,
+        "share_of_drifted_columns": share,
+        "report_path": report_path,
     }
+    logger.info(
+        "Drift detected=%s, share_of_drifted_columns=%.3f (report: %s)",
+        drift_detected,
+        share,
+        report_path,
+    )
+    return out

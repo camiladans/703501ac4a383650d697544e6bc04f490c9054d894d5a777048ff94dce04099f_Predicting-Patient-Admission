@@ -5,6 +5,7 @@ from airflow.operators.empty import EmptyOperator
 from datetime import datetime
 from typing import Dict, Any
 import sys
+from airflow.utils.trigger_rule import TriggerRule
 
 # Add '/app' to import path for project modules
 if "/app" not in sys.path:
@@ -115,11 +116,38 @@ def ml_pipeline():
 
     @task()
     def step_train(paths: Dict[str, str]) -> str:
-        """Train baseline model -> persist model.pkl."""
+        """Train baseline model -> persist model.pkl and log to MLflow."""
+        import os
+        import mlflow
+        from mlflow import sklearn as mlflow_sklearn
+
+        mlflow.set_tracking_uri("http://mlflow:5000")
+        mlflow.set_experiment("ml_pipeline")  # optional but nice
+
+        os.makedirs("/app/models", exist_ok=True)
+
         train = pd.read_pickle(paths["train_feat_path"])
-        model, _ = train_model(train, model_type="logreg")
+        model_type = "logreg"
+        model, train_info = train_model(train, model_type=model_type)
+
         model_path = "/app/models/model.pkl"
         save_model(model, model_path)
+
+        # Log a run
+        with mlflow.start_run(run_name="train"):
+            mlflow.log_param("model_type", model_type)
+            # If you have anything useful in train_info, log it:
+            if isinstance(train_info, dict):
+                for k, v in train_info.items():
+                    if isinstance(v, (int, float, str, bool)):
+                        mlflow.log_param(f"train_{k}", v)
+            mlflow.log_artifact(model_path, artifact_path="artifacts")
+            # Or log as a proper MLflow model (sklearn example):
+            try:
+                mlflow_sklearn.log_model(model, artifact_path="sklearn_model")
+            except Exception:
+                pass  # keep it optional
+
         return model_path
 
     @task()
@@ -146,7 +174,12 @@ def ml_pipeline():
             raise FileNotFoundError(f"Missing current CSV: {cur_path}")
 
         # If your target column is named differently, set it here
-        results = detect_drift(ref_path, cur_path, target="SOURCE")
+        results = detect_drift(
+            reference_csv=ref_path,
+            current_csv=cur_path,
+            target="SOURCE",  # optional, ignored unless used in drift_detection.py
+            report_dir="/app/reports",  # ensures the JSON lands in your mounted reports volume
+        )
 
         # Ensure metrics are captured under a run
         with mlflow.start_run(run_name="drift_detection", nested=True):
@@ -157,31 +190,31 @@ def ml_pipeline():
 
         return {
             "drift_detected": bool(results.get("drift_detected", False)),
-            "overall_drift_share": float(results.get("overall_drift_share", 0.0)),
+            "overall_drift_score": float(results.get("overall_drift_score", 0.0)),
+            "report_path": results.get("report_path"),
         }
 
     @task.branch(task_id="branch_on_drift")
     def branch_on_drift(drift_result: Dict[str, Any]) -> str:
-        """If drift detected -> go to 'retrain_model' else -> 'pipeline_complete'."""
-        return (
-            "retrain_model"
-            if drift_result.get("drift_detected")
-            else "pipeline_complete"
-        )
+        return "retrain_model" if drift_result.get("drift_detected") else "no_retrain"
 
     @task(task_id="retrain_model")
     def step_retrain(paths: Dict[str, str]) -> str:
-        """
-        Simple retrain step (extend as needed).
-        Saves to a separate retrained model path.
-        """
+        import mlflow
+
+        mlflow.set_tracking_uri("http://mlflow:5000")
         train = pd.read_pickle(paths["train_feat_path"])
         model, _ = train_model(train, model_type="logreg")
         model_path = "/app/models/model_retrained.pkl"
         save_model(model, model_path)
         return model_path
 
-    pipeline_complete = EmptyOperator(task_id="pipeline_complete")
+    no_retrain = EmptyOperator(task_id="no_retrain")
+
+    pipeline_complete = EmptyOperator(
+        task_id="pipeline_complete",
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+    )
 
     # ---------- Orchestration ----------
     raw_paths = step_preprocess()
@@ -193,7 +226,8 @@ def ml_pipeline():
     next_task = branch_on_drift(drift_result)
 
     retrain_task = step_retrain(feat_paths)
-    next_task >> [retrain_task, pipeline_complete]
+    next_task >> [retrain_task, no_retrain]
+    [retrain_task, no_retrain] >> pipeline_complete
 
 
 ml_pipeline()

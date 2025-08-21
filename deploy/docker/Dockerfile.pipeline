@@ -21,6 +21,7 @@ RUN set -eux; \
       mlflow==3.1.4 \
       psycopg2-binary==2.9.10 \
       boto3==1.40.0 \
+	  loguru==0.7.2 \
     && break || { echo "pip attempt $i failed; sleep $((i*5))s"; sleep $((i*5)); }; \
   done
 

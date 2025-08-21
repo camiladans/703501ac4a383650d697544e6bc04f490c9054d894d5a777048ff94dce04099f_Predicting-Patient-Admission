@@ -170,15 +170,17 @@ def detect_drift(
     features: Optional[List[str]] = None,
     drift_share_threshold: float = 0.33,  # fraction of columns drifting to flip the flag
     psi_threshold: float = 0.2,  # PSI > 0.2 => drifted column (industry heuristic)
+    save_path: str = "reports/drift_report.json",
 ) -> Dict:
     """
-    Returns:
+    Detect drift between reference and current datasets.
+
+    Returns the full result dict (with extra metadata),
+    but also writes a JSON file with slim format:
       {
         "drift_detected": bool,
-        "overall_drift_score": float|None,    # share of drifted columns
-        "selected_features": [...],
-        "raw_report": dict|None,              # Evidently report (if extractable)
-        "method": "evidently" | "psi_fallback"
+        "feature_drifts": {feature: psi_score, ...},
+        "overall_drift_score": float
       }
     """
     logger.info("Loading reference from %s", reference_path_or_df)
@@ -195,17 +197,16 @@ def detect_drift(
         else current_path_or_df.copy()
     )
 
-    # Feature selection: numeric intersection by default
+    # --- Feature selection ---
     if features is None:
         common = [c for c in ref.columns if c in cur.columns]
         num = [c for c in common if pd.api.types.is_numeric_dtype(ref[c])]
         features = num or common
     ref_use = ref[features].copy()
     cur_use = cur[features].copy()
-
     logger.info("Selected features for drift check: %s", features)
 
-    # 1) Try Evidently Report
+    # --- Try Evidently report first ---
     rep_dict = None
     drift_bool = None
     drift_share = None
@@ -216,7 +217,6 @@ def detect_drift(
         rep_dict = _report_to_dict(report)
 
         if rep_dict is not None:
-            # Try to find standard keys across versions
             drift_flag = _deep_find_first(rep_dict, ["dataset_drift", "drift_detected"])
             share = _deep_find_first(
                 rep_dict,
@@ -234,16 +234,14 @@ def detect_drift(
         else:
             method = "psi_fallback"
     except Exception:
-        # If Evidently execution itself fails, drop to fallback
         method = "psi_fallback"
 
-    # 2) PSI fallback (no JSON export or report unavailable)
+    # --- Fallback: PSI calculation ---
     if method == "psi_fallback":
         drifted = 0
         total = 0
         for col in features:
             if not pd.api.types.is_numeric_dtype(ref_use[col]):
-                # try coerce non-numeric quietly
                 ref_use[col] = pd.to_numeric(ref_use[col], errors="coerce")
                 cur_use[col] = pd.to_numeric(cur_use[col], errors="coerce")
             total += 1
@@ -253,10 +251,37 @@ def detect_drift(
         drift_share = (drifted / total) if total else 0.0
         drift_bool = drift_share >= drift_share_threshold
 
-    return {
+    # --- Full result (for return to DAG) ---
+    result = {
         "drift_detected": bool(drift_bool),
         "overall_drift_score": drift_share if drift_share is not None else None,
         "selected_features": features,
         "raw_report": rep_dict,  # may be None in fallback
         "method": method,
     }
+
+    # --- Slim JSON output (always overwrite) ---
+    feature_drifts: Dict[str, float] = {}
+    for col in features:
+        try:
+            feature_drifts[col] = float(
+                _psi_for_feature(ref_use[col], cur_use[col], bins=10)
+            )
+        except Exception:
+            feature_drifts[col] = 0.0
+
+    json_result = {
+        "drift_detected": result["drift_detected"],
+        "feature_drifts": feature_drifts,
+        "overall_drift_score": result["overall_drift_score"],
+    }
+
+    try:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, "w") as f:
+            json.dump(json_result, f, indent=2)
+        logger.info("Slim drift report written to %s", save_path)
+    except Exception as e:
+        logger.warning("Failed to save drift report JSON: %s", e)
+
+    return result

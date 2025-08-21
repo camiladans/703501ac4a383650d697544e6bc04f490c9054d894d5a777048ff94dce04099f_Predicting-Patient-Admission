@@ -22,6 +22,28 @@ import numpy as np
 import pandas as pd
 import mlflow
 from sklearn.metrics import accuracy_score, f1_score
+from pandas.api.types import is_object_dtype, is_bool_dtype, is_numeric_dtype
+
+
+def _coerce_features_numeric(X: pd.DataFrame) -> pd.DataFrame:
+    X = X.copy()
+    if "SEX" in X.columns and is_object_dtype(X["SEX"]):
+        X["SEX"] = (
+            X["SEX"]
+            .map({"M": 1, "F": 0, "Male": 1, "Female": 0, "m": 1, "f": 0})
+            .astype("float64")
+        )
+    bool_cols = [c for c in X.columns if is_bool_dtype(X[c])]
+    if bool_cols:
+        X[bool_cols] = X[bool_cols].astype("int8")
+    obj_cols = [c for c in X.columns if is_object_dtype(X[c])]
+    for c in obj_cols:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+    num_cols = [c for c in X.columns if is_numeric_dtype(X[c])]
+    for c in num_cols:
+        if X[c].isna().any():
+            X[c] = X[c].fillna(X[c].median())
+    return X
 
 
 def _encode_target(y: Union[pd.Series, np.ndarray, list]) -> np.ndarray:
@@ -87,6 +109,7 @@ def evaluate_model(
         y_true = _encode_target(y_test)
 
     # Predictions
+    X = _coerce_features_numeric(X)
     y_pred = model.predict(X)
     y_pred = np.asarray(y_pred).astype(int).ravel()
     if y_pred.shape[0] != y_true.shape[0]:

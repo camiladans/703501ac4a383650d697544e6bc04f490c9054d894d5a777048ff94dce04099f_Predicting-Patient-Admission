@@ -54,6 +54,9 @@ This project uses a two-stage Docker setup:
 ```bash
 docker compose -f docker-compose.yaml up -d --build
 ```
+docker compose build --no-cache --progress=plain
+docker compose run --rm airflow-init
+docker compose up -d
 
 ### 1.2 Build the MLflow server image
 ```bash

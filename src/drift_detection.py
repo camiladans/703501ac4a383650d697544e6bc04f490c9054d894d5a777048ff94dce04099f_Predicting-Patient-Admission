@@ -1,16 +1,29 @@
 # src/drift_detection.py
 from __future__ import annotations
-
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple, Iterable, Optional
 import pandas as pd
 
-# Evidently 0.7.x API
-from evidently.report import Report
-from evidently.metric_preset import DataDriftPreset
-from evidently.pipeline.column_mapping import ColumnMapping
+from evidently import Report
 
-# Column names to always exclude (targets, IDs, etc.)
-_EXCLUDE_NAMES = {
+# 0.7+: Dataset/DataDefinition present; older versions won't have these
+try:
+    from evidently import Dataset, DataDefinition  # 0.7.x
+except Exception:
+    Dataset = DataDefinition = None  # type: ignore
+
+# Prefer preset if available; else fall back to dataset-level metric
+try:
+    from evidently.metric_preset import (
+        DataDriftPreset,
+    )  # 0.4–0.6 (sometimes present in 0.7)
+
+    _USE_PRESET = True
+except Exception:
+    from evidently.metrics.data_drift.dataset_drift_metric import DatasetDriftMetric
+
+    _USE_PRESET = False
+
+_DEFAULT_EXCLUDE = {
     "SOURCE",
     "target",
     "label",
@@ -22,102 +35,67 @@ _EXCLUDE_NAMES = {
 }
 
 
-def _align(ref: pd.DataFrame, cur: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Keep only shared columns in the same order."""
+def _align_cols(
+    ref: pd.DataFrame, cur: pd.DataFrame
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     shared = [c for c in ref.columns if c in cur.columns]
-    return ref[shared].copy(), cur[shared].copy()
+    return ref.loc[:, shared].copy(), cur.loc[:, shared].copy()
 
 
-def _choose_feature_columns(df: pd.DataFrame) -> List[str]:
-    """
-    Choose usable feature columns:
-    - Exclude known target/ID columns by name
-    - Exclude datetime-like columns by dtype
-    """
-    cols = [c for c in df.columns if c not in _EXCLUDE_NAMES]
-    dt_cols = set(df.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns)
-    return [c for c in cols if c not in dt_cols]
+def _choose_feature_columns(df: pd.DataFrame, exclude: Iterable[str]) -> List[str]:
+    # Drop explicit excludes and datetime-like cols
+    excl = set(x.lower() for x in exclude)
+    keep = [c for c in df.columns if c.lower() not in excl]
+    dt_cols = set(
+        df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, tz]"]).columns
+    )
+    return [c for c in keep if c not in dt_cols]
 
 
 def _coerce_object_to_string(df: pd.DataFrame) -> pd.DataFrame:
-    """Coerce object columns to pandas 'string' dtype for consistency."""
-    obj_cols = df.select_dtypes(include=["object"]).columns
-    if len(obj_cols):
+    obj = df.select_dtypes(include=["object"]).columns
+    if len(obj):
         df = df.copy()
-        df[obj_cols] = df[obj_cols].astype("string")
+        df[obj] = df[obj].astype("string")
     return df
 
 
 def detect_drift(
-    reference_csv_path: str,
-    current_csv_path: str,
-    html_report_path: Optional[str] = None,  # e.g., "/app/reports/drift_report.html"
-) -> Dict[str, Any]:
-    """
-    Run Evidently DataDriftPreset on two CSVs and return a summary dict.
+    ref_csv: str,
+    cur_csv: str,
+    exclude_cols: Optional[Iterable[str]] = None,
+) -> Dict[str, object]:
+    ref = pd.read_csv(ref_csv)
+    cur = pd.read_csv(cur_csv)
 
-    Returns:
-        {
-          "drift_detected": bool,
-          "overall_drift_score": float  # fraction [0..1] of drifted features
-        }
-    Compatible with Evidently >= 0.7.0 (tested on 0.7.11).
-    """
-    # --- Load ---
-    ref = pd.read_csv(reference_csv_path)
-    cur = pd.read_csv(current_csv_path)
+    # Align columns & sanitize dtypes
+    ref, cur = _align_cols(ref, cur)
+    features = _choose_feature_columns(ref, exclude_cols or _DEFAULT_EXCLUDE)
+    ref = _coerce_object_to_string(ref[features])
+    cur = _coerce_object_to_string(cur[features])
 
-    # --- Align schemas (shared columns in same order) ---
-    ref, cur = _align(ref, cur)
-    if ref.empty or cur.empty:
-        raise ValueError(
-            "Reference/current dataframes are empty after alignment (no shared columns or no rows)."
-        )
+    metrics = [DataDriftPreset()] if _USE_PRESET else [DatasetDriftMetric()]
 
-    # --- Select features & basic sanitization ---
-    features = _choose_feature_columns(ref)
-    if not features:
-        raise ValueError(
-            "No usable feature columns found after exclusions; "
-            "check your CSVs, exclude list, and datetime columns."
-        )
+    if Dataset is not None:
+        # Evidently 0.7+ path
+        ref_data = Dataset.from_pandas(ref, data_definition=DataDefinition())
+        cur_data = Dataset.from_pandas(cur, data_definition=DataDefinition())
+        result = Report(metrics).run(reference_data=ref_data, current_data=cur_data)
+        res = result.as_dict()
+    else:
+        # 0.4–0.6 path
+        report = Report(metrics)
+        report.run(reference_data=ref, current_data=cur)
+        res = report.as_dict()
 
-    ref = ref[features]
-    cur = cur[features]
+    # Safely extract dataset-level result
+    metrics_list = res.get("metrics", [])
+    if not metrics_list:
+        return {"drift_detected": False, "overall_drift_share": 0.0, "raw": res}
 
-    # Coerce object -> string for categorical consistency
-    ref = _coerce_object_to_string(ref)
-    cur = _coerce_object_to_string(cur)
-
-    # Let Evidently infer types; we restrict to features explicitly
-    mapping = ColumnMapping(
-        target=None,
-        prediction=None,
-        numerical_features=None,
-        categorical_features=None,
-    )
-
-    # --- Build & run report ---
-    report = Report(metrics=[DataDriftPreset()])
-    report.run(reference_data=ref, current_data=cur, column_mapping=mapping)
-
-    if html_report_path:
-        report.save_html(html_report_path)
-
-    # --- Parse summary ---
-    summary = report.as_dict()
-    drift_detected = False
-    overall_score = 0.0
-
-    # DataDriftPreset result carries 'dataset_drift' and 'share_of_drifted_features'
-    for m in summary.get("metrics", []):
-        res = m.get("result", {})
-        if "dataset_drift" in res:
-            drift_detected = bool(res["dataset_drift"])
-            overall_score = float(res.get("share_of_drifted_features", 0.0))
-            break
-
+    block = metrics_list[0].get("result", {})
     return {
-        "drift_detected": drift_detected,
-        "overall_drift_score": overall_score,
+        "drift_detected": bool(block.get("dataset_drift", False)),
+        "overall_drift_share": float(block.get("share_of_drifted_columns", 0.0)),
+        "raw": res,
     }

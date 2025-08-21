@@ -3,7 +3,7 @@
 from airflow.decorators import dag, task
 from airflow.operators.empty import EmptyOperator
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Any
 import sys
 
 # Add '/app' to import path for project modules
@@ -48,7 +48,7 @@ def ml_pipeline():
         # Adjust input path as needed
         train, test = preprocess_data("/app/data/raw/data-ori.csv")
 
-        # Persist pickles (unchanged behavior)
+        # Persist pickles
         train_path = "/app/data/train.pkl"
         test_path = "/app/data/test.pkl"
         train.to_pickle(train_path)
@@ -130,7 +130,7 @@ def ml_pipeline():
         evaluate_model(model, test, report_path="/app/reports/metrics.txt")
 
     @task()
-    def step_drift_detection(paths: Dict[str, str]) -> Dict[str, object]:
+    def step_drift_detection(paths: Dict[str, str]) -> Dict[str, Any]:
         """
         Run drift detection on test CSVs produced by step_preprocess()
         and log status to MLflow.
@@ -145,22 +145,23 @@ def ml_pipeline():
         if not os.path.exists(cur_path):
             raise FileNotFoundError(f"Missing current CSV: {cur_path}")
 
-        results = detect_drift(ref_path, cur_path)
+        # If your target column is named differently, set it here
+        results = detect_drift(ref_path, cur_path, target="SOURCE")
 
         # Ensure metrics are captured under a run
         with mlflow.start_run(run_name="drift_detection", nested=True):
             mlflow.log_param("test_drift_detected", results.get("drift_detected"))
             mlflow.log_param(
-                "test_overall_drift_score", results.get("overall_drift_score")
+                "test_overall_drift_share", results.get("overall_drift_share")
             )
 
         return {
             "drift_detected": bool(results.get("drift_detected", False)),
-            "overall_drift_score": float(results.get("overall_drift_score", 0.0)),
+            "overall_drift_share": float(results.get("overall_drift_share", 0.0)),
         }
 
     @task.branch(task_id="branch_on_drift")
-    def branch_on_drift(drift_result: Dict[str, object]) -> str:
+    def branch_on_drift(drift_result: Dict[str, Any]) -> str:
         """If drift detected -> go to 'retrain_model' else -> 'pipeline_complete'."""
         return (
             "retrain_model"
@@ -191,7 +192,8 @@ def ml_pipeline():
     drift_result = step_drift_detection(raw_paths)
     next_task = branch_on_drift(drift_result)
 
-    next_task >> [step_retrain(feat_paths), pipeline_complete]
+    retrain_task = step_retrain(feat_paths)
+    next_task >> [retrain_task, pipeline_complete]
 
 
 ml_pipeline()

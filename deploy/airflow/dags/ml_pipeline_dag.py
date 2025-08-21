@@ -30,8 +30,10 @@ from src.model_training import train_model  # noqa: E402
 from src.evaluation import evaluate_model  # noqa: E402
 from src.drift_detection import detect_drift  # noqa: E402
 
-# ---- Config ----
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.WARNING)
+
+
 MLFLOW_URI = "http://mlflow:5000"
 TARGET_COL = "SOURCE"
 RAW_SOURCE = "/app/data/raw/data-ori.csv"  # inside container
@@ -50,7 +52,8 @@ def pipeline():
         """Ingest, preprocess (creates drifted copies), and save train/test CSVs."""
         import pandas as pd  # local import keeps DAG parse light
 
-        df = ingest_data(source_path=RAW_SOURCE)
+        df_or_path = ingest_data(source_path=RAW_SOURCE)
+        df = pd.read_csv(df_or_path) if isinstance(df_or_path, str) else df_or_path
 
         (
             X_train,

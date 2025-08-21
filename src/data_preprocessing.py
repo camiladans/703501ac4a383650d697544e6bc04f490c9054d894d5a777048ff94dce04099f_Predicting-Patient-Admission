@@ -11,9 +11,11 @@ Handles raw data cleaning and normalization steps:
    X_train_drifted, y_train_drifted, X_test_drifted, y_test_drifted)
 """
 
+# src/data_preprocessing.py
 from __future__ import annotations
 
 import os
+import logging  # <-- add this
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
@@ -21,12 +23,9 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-# logger = logging.getLogger(__name__)
-# logging.basicConfig(level=logging.INFO)
-
-# logger = logging.getLogger(__name__)
-# # switch INFO → WARNING to suppress info-level chatter in airflow
-# logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
+# pick ONE level; WARNING keeps Airflow logs quiet
+logging.basicConfig(level=logging.WARNING)  # <-- remove the earlier INFO line
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,11 +111,11 @@ def preprocess_data(
     if numeric_cols is None:
         numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
 
-    # logger.debug(
-    #     "Detected %d numeric and %d categorical features.",
-    #     len(numeric_cols),
-    #     len(categorical_cols),
-    # )
+    logger.debug(
+        "Detected %d numeric and %d categorical features.",
+        len(numeric_cols),
+        len(categorical_cols),
+    )
 
     X_train, X_test, y_train, y_test = train_test_split(
         X,

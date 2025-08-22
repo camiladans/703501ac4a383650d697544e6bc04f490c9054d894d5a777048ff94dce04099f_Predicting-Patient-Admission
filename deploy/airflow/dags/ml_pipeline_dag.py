@@ -95,6 +95,7 @@ def pipeline():
 
         # Ensure the container talks to the MLflow service
         mlflow.set_tracking_uri(MLFLOW_URI)
+        mlflow.set_experiment("patient_admission_v2")
 
         df_train = pd.read_csv(paths["train_path"])
 
@@ -118,6 +119,7 @@ def pipeline():
         import mlflow
 
         mlflow.set_tracking_uri(MLFLOW_URI)
+        mlflow.set_experiment("patient_admission_v2")
 
         df_test = pd.read_csv(paths["test_path"])
         X_test = df_test.drop(columns=[TARGET_COL])
@@ -149,6 +151,7 @@ def pipeline():
         import mlflow
 
         mlflow.set_tracking_uri(MLFLOW_URI)
+        mlflow.set_experiment("patient_admission_v2")
 
         with mlflow.start_run(run_name="drift_detection"):
             # Test vs drifted_test

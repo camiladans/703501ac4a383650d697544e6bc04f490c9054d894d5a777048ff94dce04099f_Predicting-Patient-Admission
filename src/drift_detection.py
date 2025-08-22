@@ -154,5 +154,6 @@ def detect_drift(reference_data_path: str, current_data_path: str) -> Dict[str, 
     with open("reports/drift_report.json", "w") as f:
         json.dump(out, f, indent=2)
     logger.info("Slim drift report written to reports/drift_report.json")
+    print(f"Wrote drift report: reports/drift_report.json -> {out}")
 
     return out

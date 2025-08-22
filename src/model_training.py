@@ -8,7 +8,7 @@ End-to-end training and logging for a binary classification model
 
 1) Sets MLflow tracking to an MLflow server at http://localhost:5000
 2) Trains a RandomForest or LogisticRegression with recall-oriented tuning
-3) Logs EXACTLY three hyperparameters (per model type)
+3) Logs three hyperparameters (per model type)
 4) Saves model artifacts under ./mlflow/artifacts/
 5) Logs a Custom PyFunc wrapper (spec-compliant) to MLflow
    - Wrapper loads optional preprocessor & feature_names
@@ -18,7 +18,7 @@ How to run (example)
 --------------------
 python -m src.model_training
 
-You can also import `train_and_log()` from other code (e.g., Airflow task).
+Can also import `train_and_log()` from other code (e.g., Airflow task).
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ class CustomMLModel(mlflow.pyfunc.PythonModel):
     Custom MLflow PyFunc model wrapper for your trained model.
 
     What it does (per spec):
-    - Loads artifacts: model (required), preprocessor & feature_names (optional)
+    - Loads artifacts: model, preprocessor & feature_names
     - predict(): applies preprocessing if available and returns model.predict(...) labels
     - No thresholding and no feature reordering logic inside predict()
 
@@ -332,10 +332,9 @@ def train_and_log(
     run_name: str = "training-run",
 ) -> str:
     """
-    Checklist compliance:
     - Set tracking URI: http://localhost:5000
     - Wrap training in mlflow.start_run()
-    - Log EXACTLY 3 hyperparameters (by model type)
+    - Log 3 hyperparameters (by model type)
       * Classification (RF): n_estimators, max_depth, random_state
       * Classification (LogReg): C, max_iter, random_state (justify in README)
     - Save model artifacts under ./mlflow/artifacts/

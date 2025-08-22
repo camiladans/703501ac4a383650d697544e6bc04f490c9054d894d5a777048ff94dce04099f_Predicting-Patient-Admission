@@ -27,7 +27,7 @@ if "/app/src" not in sys.path:
 # --- first-party (project) ---
 from src.data_ingestion import ingest_data  # noqa: E402
 from src.data_preprocessing import preprocess_data  # noqa: E402
-from src.model_training import train_model, log_model_to_mlflow  # noqa: E402
+from src.model_training import train_and_log  # <<< swapped import
 from src.evaluation import evaluate_model  # noqa: E402
 from src.drift_detection import detect_drift  # noqa: E402
 
@@ -77,8 +77,6 @@ def pipeline():
             test_path, index=False
         )
 
-        # NOTE: If preprocess_data already wrote drifted CSVs, these paths should exist.
-        # Otherwise, ensure  preprocess writes them (or adjust drift task below).
         return {
             "train_path": train_path,
             "test_path": test_path,
@@ -89,35 +87,29 @@ def pipeline():
     @task(task_id="step_train")
     def step_train(paths: dict) -> dict:
         """
-        Train on train.csv, log model to MLflow (pyfunc with threshold + artifacts),
-        and return {'model_uri': ..., 'train_metrics': {...}}.
+        Train on train.csv and log model to MLflow (PyFunc).
+        Returns {'model_uri': 'runs:/<run_id>/model'}.
         """
         import pandas as pd
+        import mlflow
+
+        # Ensure the container talks to the MLflow service
+        mlflow.set_tracking_uri(MLFLOW_URI)
 
         df_train = pd.read_csv(paths["train_path"])
 
-        # Upgraded training returns: best_model, metrics (incl. threshold), feature_names
-        best_model, metrics, feature_names = train_model(
+        # train_and_log() handles: start_run, params/metrics logging, and PyFunc logging
+        run_id = train_and_log(
             df_train,
             model_type="rf",  # or "logreg"
-            target_recall=0.90,  # tune to your needs
+            target_recall=0.90,
             random_state=42,
-        )
-
-        # Log via custom PyFunc wrapper so threshold + feature list travel with the model
-        run_id = log_model_to_mlflow(
-            best_model,
-            tracking_uri=MLFLOW_URI,
-            artifact_dir="models_export",
-            preprocessor=None,  # pass actual preprocessor
-            feature_names=feature_names,
-            metrics=metrics,
             experiment="patient_admission",
-            tags={"model_type": "rf", "target": "IN"},
+            run_name="rf-train",
         )
-        model_uri = f"runs:/{run_id}/model"  # pyfunc artifact path
 
-        return {"model_uri": model_uri, "train_metrics": metrics}
+        model_uri = f"runs:/{run_id}/model"  # pyfunc artifact path
+        return {"model_uri": model_uri}
 
     @task(task_id="step_evaluate")
     def step_evaluate(paths: dict, train_out: dict) -> dict:
@@ -131,14 +123,13 @@ def pipeline():
         X_test = df_test.drop(columns=[TARGET_COL])
         y_test = df_test[TARGET_COL]
 
-        # Load the pyfunc model (enforces feature order + threshold)
         model = mlflow.pyfunc.load_model(train_out["model_uri"])
 
-        # evaluate_model should call model.predict(X) internally (works with pyfunc)
+        # evaluate_model should accept (model, X, y) and log/return metrics
         metrics = evaluate_model(model, X_test, y_test)
 
         with mlflow.start_run(run_name="evaluate"):
-            # Log scalar metrics (ignore dicts/lists safely)
+            # Log scalar metrics (skip non-scalars)
             for k, v in metrics.items():
                 try:
                     mlflow.log_metric(k, float(v))

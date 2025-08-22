@@ -1,0 +1,9 @@
+{
+  "drift_detected": true,
+  "feature_drifts": {
+    "HAEMATOCRIT": 0.009298646082644938,
+    "HAEMOGLOBINS": 0.8044927140868754,
+    "ERYTHROCYTE": 0.0021829305226705787
+  },
+  "overall_drift_score": 0.2719914302307303
+}

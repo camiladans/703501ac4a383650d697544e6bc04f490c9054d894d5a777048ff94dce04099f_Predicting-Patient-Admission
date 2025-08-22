@@ -30,9 +30,23 @@ from src.data_preprocessing import preprocess_data  # noqa: E402
 from src.model_training import train_and_log  # <<< swapped import
 from src.evaluation import evaluate_model  # noqa: E402
 from src.drift_detection import detect_drift  # noqa: E402
+from mlflow.tracking import MlflowClient
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.WARNING)
+
+
+def ensure_experiment(name: str) -> str:
+    """
+    Ensure an MLflow experiment exists with server-managed artifact location.
+    Returns experiment_id. Requires mlflow server started with --serve-artifacts.
+    """
+    client = MlflowClient()
+    exp = client.get_experiment_by_name(name)
+    if exp is None:
+        return client.create_experiment(name, artifact_location="mlflow-artifacts:/")
+    return exp.experiment_id
+
 
 # In Docker, prefer service name "mlflow" rather than localhost
 MLFLOW_URI = "http://mlflow:5000"
@@ -95,6 +109,7 @@ def pipeline():
 
         # Ensure the container talks to the MLflow service
         mlflow.set_tracking_uri(MLFLOW_URI)
+        ensure_experiment("patient_admission_v2")
         mlflow.set_experiment("patient_admission_v2")
 
         df_train = pd.read_csv(paths["train_path"])
@@ -119,6 +134,7 @@ def pipeline():
         import mlflow
 
         mlflow.set_tracking_uri(MLFLOW_URI)
+        ensure_experiment("patient_admission_v2")
         mlflow.set_experiment("patient_admission_v2")
 
         df_test = pd.read_csv(paths["test_path"])
@@ -151,6 +167,7 @@ def pipeline():
         import mlflow
 
         mlflow.set_tracking_uri(MLFLOW_URI)
+        ensure_experiment("patient_admission_v2")
         mlflow.set_experiment("patient_admission_v2")
 
         with mlflow.start_run(run_name="drift_detection"):

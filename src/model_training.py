@@ -51,9 +51,24 @@ from sklearn.metrics import (
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.pipeline import Pipeline
+from mlflow.tracking import MlflowClient
 
 # All staged artifacts are written here BEFORE MLflow logs them into the run
 ARTIFACT_STAGING_DIR = Path("mlflow") / "artifacts" / "models_export"
+
+
+def _ensure_experiment(name: str) -> str:
+    """
+    Ensure an MLflow experiment exists with a server-managed artifact location.
+    If it doesn't exist, create it with 'mlflow-artifacts:/' so clients upload via HTTP
+    (requires mlflow server started with --serve-artifacts).
+    Returns the experiment_id.
+    """
+    client = MlflowClient()
+    exp = client.get_experiment_by_name(name)
+    if exp is None:
+        return client.create_experiment(name, artifact_location="mlflow-artifacts:/")
+    return exp.experiment_id
 
 
 # ======================================================
@@ -331,7 +346,7 @@ def train_and_log(
     model_type: str = "rf",
     target_recall: float = 0.90,
     random_state: int = 42,
-    experiment: str = "patient_admission",
+    experiment: str = "patient_admission_v2",  # for new experiments, update name
     run_name: str = "training-run",
     tracking_uri: str | None = None,  # <— allow explicit override
 ) -> str:
@@ -347,6 +362,7 @@ def train_and_log(
     # 1) Point to your MLflow server
     uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     mlflow.set_tracking_uri(uri)
+    _ = _ensure_experiment(experiment)
     mlflow.set_experiment(experiment)
 
     # Ensure staging directory exists

@@ -35,6 +35,7 @@ import mlflow
 import mlflow.pyfunc
 import numpy as np
 import pandas as pd
+import os
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -322,6 +323,8 @@ def train_model(
 # ======================================================
 # SECTION 4 — Train & Log (meets the checklist)
 # ======================================================
+
+
 def train_and_log(
     train_data: pd.DataFrame,
     *,
@@ -330,6 +333,7 @@ def train_and_log(
     random_state: int = 42,
     experiment: str = "patient_admission",
     run_name: str = "training-run",
+    tracking_uri: str | None = None,  # <— allow explicit override
 ) -> str:
     """
     - Set tracking URI: http://localhost:5000
@@ -341,7 +345,8 @@ def train_and_log(
     - Log model using custom PyFunc wrapper
     """
     # 1) Point to your MLflow server
-    mlflow.set_tracking_uri("http://localhost:5000")
+    uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    mlflow.set_tracking_uri(uri)
     mlflow.set_experiment(experiment)
 
     # Ensure staging directory exists

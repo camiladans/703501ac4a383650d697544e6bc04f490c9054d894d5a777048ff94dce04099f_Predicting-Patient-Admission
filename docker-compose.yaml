@@ -20,6 +20,7 @@ x-airflow-common: &airflow-common
     PYTHONPATH: /app
     AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
     AIRFLOW__LOGGING__REMOTE_LOGGING: "False"
+    MLFLOW_TRACKING_URI: http://mlflow:5000   # << all Airflow services use this
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/logs:/opt/airflow/logs
@@ -32,8 +33,6 @@ x-airflow-common: &airflow-common
     - ${AIRFLOW_PROJ_DIR:-.}/data:/app/data
     - ${AIRFLOW_PROJ_DIR:-.}/models:/app/models
     - ${AIRFLOW_PROJ_DIR:-.}/reports:/app/reports
-
-    - mlflow-artifacts:/mlflow
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
@@ -154,9 +153,11 @@ services:
       --serve-artifacts
     environment:
       MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@postgres-mlflow:5432/mlflow
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
+      MLFLOW_HOST: 0.0.0.0
+      MLFLOW_PORT: 5000
     volumes:
-      - mlflow-artifacts:/mlflow/artifacts
-      - ./mlflow:/mlflow_app
+      - ./mlflow/artifacts:/mlflow/artifacts   # ✅ artifact store on host
     depends_on:
       postgres-mlflow:
         condition: service_healthy

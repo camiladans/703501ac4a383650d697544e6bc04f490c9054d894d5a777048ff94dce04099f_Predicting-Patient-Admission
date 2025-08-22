@@ -28,11 +28,11 @@ x-airflow-common: &airflow-common
     - ${AIRFLOW_PROJ_DIR:-.}/deploy/airflow/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/scripts:/opt/airflow/scripts
     - ${AIRFLOW_PROJ_DIR:-.}/reports:/opt/airflow/reports
+    - ${AIRFLOW_PROJ_DIR:-.}/models:/opt/airflow/models
+    - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
 
     # Mount your source code and runtime folders
     - ${AIRFLOW_PROJ_DIR:-.}/src:/app/src
-    - ${AIRFLOW_PROJ_DIR:-.}/data:/app/data
-    - ${AIRFLOW_PROJ_DIR:-.}/models:/app/models
     - ./mlflow/artifacts:/mlflow/artifacts
 
   user: "${AIRFLOW_UID:-50000}:0"

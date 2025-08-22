@@ -91,7 +91,6 @@ def detect_drift(reference_data_path: str, current_data_path: str) -> Dict[str, 
     - Per-feature drift: compute PSI
     - overall_drift_score: average of per-feature PSI scores
     - Output: save to reports/drift_report.json and return the same dict
-    - No use of report.as_dict / extra Evidently internals; no loguru
     """
     # --- Load
     logger.info("Loading reference from %s", reference_data_path)

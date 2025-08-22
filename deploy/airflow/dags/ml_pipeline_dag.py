@@ -3,34 +3,87 @@ from __future__ import annotations
 
 """
 Airflow DAG: ml_pipeline_dag
+============================
 
-Flow (exactly 5 primary tasks):
-  1) preprocess_data      -> ingest, preprocess, save data/train.csv & data/test.csv (+ drifted_* files)
-  2) feature_engineering  -> (light/no-op) write data/train_fe.csv & data/test_fe.csv
-  3) train_model          -> train on train_fe.csv, log model to MLflow (pyfunc), return model_uri
-  4) evaluate_model       -> load model via model_uri (pyfunc), evaluate on test_fe.csv, log metrics
-  5) drift_detection      -> PythonOperator: call detect_drift on data/test.csv vs data/drifted_test.csv, write reports/drift_report.json
+Purpose
+-------
+End-to-end ML pipeline for predicting patient admission (IN vs OUT) with
+clear, reproducible steps and MLflow tracking. This DAG:
 
-Branching:
-  - branch_on_drift (BranchPythonOperator) reads reports/drift_report.json (not XCom)
-  - if drift_detected=True  -> retrain_model (same training logic on original/non-drifted data)
-    else                    -> pipeline_complete
+1) Preprocesses raw labs, adds clinical flags, creates drifted copies
+2) Feature-engineers clinically meaningful numeric features
+3) Trains a classifier and logs to MLflow using a **custom PyFunc wrapper**
+4) Evaluates the logged model on hold-out data and logs metrics
+5) Runs drift detection** between clean vs. drifted datasets and logs a report
 
-Dependencies:
-  preprocess_data >> feature_engineering >> train_model >> evaluate_model
-  >> drift_detection >> branch_on_drift >> [retrain_model, pipeline_complete]
+Design Principles
+-----------------
+- File-oriented I/O (CSV) for debuggability and portability
+- Minimal, explicit XCom usage: each task returns a small dict of paths/URIs
+- MLflow used as the system of record params, metrics, artifacts, models
+- Works in containers: paths assume Airflow's working dir is /opt/airflow
+
+Assumptions & Prereqs
+---------------------
+- MLflow server is reachable at http://mlflow:5000 and started with
+  --serve-artifacts. The DAG creates/uses experiment: patient_experiments_v3 (see EXPERIMENT constant)
+- Docker Compose mounts on Airflow services (scheduler/apiserver):
+    ./data   -> /opt/airflow/data
+    ./reports-> /opt/airflow/reports
+- The raw CSV is available inside containers at /app/data/raw/data-ori.csv
+- Project modules live at /app/src
+
+Task Graph (exact order)
+------------------------
+1. Step_preprocess
+   - Ingests raw data; adds boolean lab flags (normal/abnormal), splits train/test, synthesizes drifted copies
+   - Writes:
+     - data/train.csv, data/test.csv
+     - data/drifted_train.csv, data/drifted_test.csv
+   - XCom: dict with the four paths above
+
+2. Feature_engineering
+   - Reads train/test and adds derived numeric features + keeps originals
+   - Writes data/train_fe.csv, data/test_fe.csv
+   - XCom: {"train_fe": "...", "test_fe": "..."}
+
+3. Step_train
+   - Trains a RandomForest (or LogisticRegression) with Recall (metric) oriented tuning
+   - Logs 3 hyperparameters and other scalar metrics
+   - Logs a Custom PyFunc model
+   - XCom: {"model_uri": "runs:/<run_id>/model"}
+
+4. Step_evaluate
+   - Loads the PyFunc model from MLflow by URI; evaluates on test_fe.csv
+   - Logs scalar metrics into a new MLflow run named evaluate
+
+5. Drift_detection
+   - Compares test.csv vs drifted_test.csv and optionally train vs drifted_train
+   - Produces a slim JSON report with per-feature PSI and an overall average:
+     reports/drift_report.json (overwritten each run)
+   - Logs drift artifacts to MLflow. If drift is detected, this task raises.
+
+Key Artifacts & Where They Live
+-------------------------------
+- Data: /opt/airflow/data (mounted from host ./data)
+  - train.csv, test.csv, train_fe.csv, test_fe.csv
+  - drifted_train.csv, drifted_test.csv
+- Reports: /opt/airflow/reports (mounted from host ./reports)
+  - drift_report.json
+
+How to Trigger
+--------------
+- Airflow UI: run ml_pipeline_dag
+
 """
-
 # --- stdlib ---
-import json
-import logging
-import sys
 from datetime import datetime
-from pathlib import Path
+import logging
+import os
+import sys
 
-# --- airflow ---
+# --- third-party ---
 from airflow.decorators import dag, task
-from airflow.operators.python import PythonOperator, BranchPythonOperator
 
 # Make project modules importable inside the container
 if "/app/src" not in sys.path:
@@ -38,9 +91,10 @@ if "/app/src" not in sys.path:
 
 # --- first-party (project) ---
 from src.data_ingestion import ingest_data  # noqa: E402
-from src.data_preprocessing import preprocess_data as preprocess_fn  # noqa: E402
+from src.data_preprocessing import preprocess_data  # noqa: E402
+from src.feature_engineering import run_feature_engineering  # noqa: E402
 from src.model_training import train_and_log  # noqa: E402
-from src.evaluation import evaluate_model as eval_fn  # noqa: E402
+from src.evaluation import evaluate_model  # noqa: E402
 from src.drift_detection import detect_drift  # noqa: E402
 from mlflow.tracking import MlflowClient
 
@@ -62,54 +116,10 @@ def ensure_experiment(name: str) -> str:
 
 # In Docker, prefer service name "mlflow" rather than localhost
 MLFLOW_URI = "http://mlflow:5000"
-EXPERIMENT = "patient_admission_v3"  # keep consistent across tasks
+EXPERIMENT = "patient_experiments_v3"  # <<< keep consistent across tasks
 
 TARGET_COL = "SOURCE"
 RAW_SOURCE = "/app/data/raw/data-ori.csv"  # path inside container
-
-DATA_DIR = Path("data")
-REPORTS_DIR = Path("reports")
-DRIFT_REPORT_PATH = REPORTS_DIR / "drift_report.json"
-
-
-# ---------- PythonOperator targets (module-level, picklable) ----------
-def drift_detection_op():
-    """
-    Runs drift detection on test.csv vs drifted_test.csv and writes reports/drift_report.json.
-    Does not raise; branching is handled by BranchPythonOperator.
-    """
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    ref = DATA_DIR / "test.csv"
-    cur = DATA_DIR / "drifted_test.csv"
-
-    if not ref.exists() or not cur.exists():
-        result = {
-            "drift_detected": False,
-            "error": "Reference or current file missing.",
-        }
-    else:
-        result = detect_drift(str(ref), str(cur))
-
-    with open(DRIFT_REPORT_PATH, "w") as f:
-        json.dump(result, f, indent=2)
-    print(f"Wrote drift report: {DRIFT_REPORT_PATH} -> {result}")
-
-
-def branch_on_drift_func():
-    """
-    Reads reports/drift_report.json and returns the next task id:
-      - 'retrain_model' if drift_detected=True
-      - 'pipeline_complete' otherwise
-    """
-    try:
-        with open(DRIFT_REPORT_PATH, "r") as f:
-            rpt = json.load(f)
-        drifted = bool(rpt.get("drift_detected", False))
-    except Exception as e:
-        print(f"Branch read error: {e}; defaulting to NO DRIFT.")
-        drifted = False
-
-    return "retrain_model" if drifted else "pipeline_complete"
 
 
 @dag(
@@ -120,9 +130,8 @@ def branch_on_drift_func():
     tags=["ml", "drift"],
 )
 def pipeline():
-    # 1) preprocess_data
-    @task(task_id="preprocess_data")
-    def preprocess_data() -> dict:
+    @task(task_id="step_preprocess")
+    def step_preprocess() -> dict:
         """Ingest, preprocess (creates drifted copies), and save train/test CSVs."""
         import pandas as pd  # local import keeps DAG parse light
 
@@ -138,11 +147,11 @@ def pipeline():
             _y_train_drifted,
             _X_test_drifted,
             _y_test_drifted,
-        ) = preprocess_fn(df, target_col=TARGET_COL)
+        ) = preprocess_data(df, target_col=TARGET_COL)
 
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        train_path = DATA_DIR / "train.csv"
-        test_path = DATA_DIR / "test.csv"
+        os.makedirs("data", exist_ok=True)
+        train_path = "data/train.csv"
+        test_path = "data/test.csv"
         pd.concat([X_train, y_train.rename(TARGET_COL)], axis=1).to_csv(
             train_path, index=False
         )
@@ -150,38 +159,23 @@ def pipeline():
             test_path, index=False
         )
 
-        # Return canonical paths (not for branching; just for subsequent tasks via XCom)
         return {
-            "train_path": str(train_path),
-            "test_path": str(test_path),
-            "drifted_train_path": str(DATA_DIR / "drifted_train.csv"),
-            "drifted_test_path": str(DATA_DIR / "drifted_test.csv"),
+            "train_path": train_path,
+            "test_path": test_path,
+            "drifted_train_path": "data/drifted_train.csv",
+            "drifted_test_path": "data/drifted_test.csv",
         }
 
-    # 2) feature_engineering
     @task(task_id="feature_engineering")
     def feature_engineering(paths: dict) -> dict:
         """
-        Minimal/no-op feature engineering step to meet pipeline requirement.
-        Reads train.csv/test.csv and writes train_fe.csv/test_fe.csv.
+        Reads data/train.csv & data/test.csv; writes data/train_fe.csv & data/test_fe.csv.
+        Uses src/feature_engineering.run_feature_engineering().
         """
-        import pandas as pd
+        return run_feature_engineering(paths["train_path"], paths["test_path"])
 
-        train_fe = DATA_DIR / "train_fe.csv"
-        test_fe = DATA_DIR / "test_fe.csv"
-
-        df_train = pd.read_csv(paths["train_path"])
-        df_test = pd.read_csv(paths["test_path"])
-
-        # (No-op) — keep columns as-is; place your real FE here.
-        df_train.to_csv(train_fe, index=False)
-        df_test.to_csv(test_fe, index=False)
-
-        return {"train_fe": str(train_fe), "test_fe": str(test_fe)}
-
-    # 3) train_model
-    @task(task_id="train_model")
-    def train_model(paths: dict, fe_paths: dict) -> dict:
+    @task(task_id="step_train")
+    def step_train(fe: dict) -> dict:
         """
         Train on train_fe.csv and log model to MLflow (PyFunc).
         Returns {'model_uri': 'runs:/<run_id>/model'}.
@@ -189,108 +183,129 @@ def pipeline():
         import pandas as pd
         import mlflow
 
+        # Ensure the container talks to the MLflow service
         mlflow.set_tracking_uri(MLFLOW_URI)
-        ensure_experiment(EXPERIMENT)
+        exp_id = ensure_experiment(EXPERIMENT)
         mlflow.set_experiment(EXPERIMENT)
 
-        df_train = pd.read_csv(fe_paths["train_fe"])
+        df_train = pd.read_csv(fe["train_fe"])
 
+        # train_and_log() handles: start_run, params/metrics logging, and PyFunc logging
         run_id = train_and_log(
             df_train,
             model_type="rf",  # or "logreg"
             target_recall=0.90,
             random_state=42,
-            experiment=EXPERIMENT,  # keep consistent!
+            experiment=EXPERIMENT,
             run_name="rf-train",
         )
+
+        print(
+            f"🏃 View run rf-train at: {MLFLOW_URI}/#/experiments/{exp_id}/runs/{run_id}"
+        )
+        print(f"🧪 View experiment at: {MLFLOW_URI}/#/experiments/{exp_id}")
 
         model_uri = f"runs:/{run_id}/model"  # pyfunc artifact path
         return {"model_uri": model_uri}
 
-    # 4) evaluate_model
-    @task(task_id="evaluate_model")
-    def evaluate_model(paths: dict, fe_paths: dict, train_out: dict) -> dict:
+    @task(task_id="step_evaluate")
+    def step_evaluate(fe: dict, train_out: dict) -> dict:
         """Load model via MLflow URI (pyfunc) and evaluate on test_fe.csv; log metrics."""
         import pandas as pd
         import mlflow
 
         mlflow.set_tracking_uri(MLFLOW_URI)
-        ensure_experiment(EXPERIMENT)
+        exp_id = ensure_experiment(EXPERIMENT)
         mlflow.set_experiment(EXPERIMENT)
 
-        df_test = pd.read_csv(fe_paths["test_fe"])
+        df_test = pd.read_csv(fe["test_fe"])
         X_test = df_test.drop(columns=[TARGET_COL])
         y_test = df_test[TARGET_COL]
 
         model = mlflow.pyfunc.load_model(train_out["model_uri"])
 
-        # evaluate function should accept (model, X, y) and return a dict of metrics
-        metrics = eval_fn(model, X_test, y_test)
+        # evaluate_model should accept (model, X, y) and log/return metrics
+        metrics = evaluate_model(model, X_test, y_test)
 
-        with mlflow.start_run(run_name="evaluate"):
+        with mlflow.start_run(run_name="evaluate") as r:
             # Log scalar metrics (skip non-scalars)
             for k, v in metrics.items():
                 try:
                     mlflow.log_metric(k, float(v))
                 except Exception:
                     pass
+            run_id = r.info.run_id
 
+        print(
+            f"📏 View evaluation run at: {MLFLOW_URI}/#/experiments/{exp_id}/runs/{run_id}"
+        )
         return metrics
 
-    # 5) drift_detection (PythonOperator)
-    drift_detection = PythonOperator(
-        task_id="drift_detection",
-        python_callable=drift_detection_op,
-    )
-
-    # Branching on drift result (read from reports/drift_report.json, not XCom)
-    branch_on_drift = BranchPythonOperator(
-        task_id="branch_on_drift",
-        python_callable=branch_on_drift_func,
-    )
-
-    # End: retrain_model (same training logic on original/non-drifted data)
-    @task(task_id="retrain_model")
-    def retrain_model(fe_paths: dict) -> dict:
-        import pandas as pd
+    @task(task_id="drift_detection")
+    def drift_detection_task(paths: dict) -> bool:
+        """
+        Run drift twice (test vs drifted_test, train vs drifted_train),
+        log params + full JSON artifacts, and raise on drift.
+        """
+        import json
+        import tempfile
         import mlflow
 
         mlflow.set_tracking_uri(MLFLOW_URI)
-        ensure_experiment(EXPERIMENT)
+        exp_id = ensure_experiment(EXPERIMENT)
         mlflow.set_experiment(EXPERIMENT)
 
-        df_train = pd.read_csv(fe_paths["train_fe"])
-        run_id = train_and_log(
-            df_train,
-            model_type="rf",
-            target_recall=0.90,
-            random_state=42,
-            experiment=EXPERIMENT,
-            run_name="rf-retrain",
-        )
-        return {"run_id": run_id}
+        with mlflow.start_run(run_name="drift_detection") as r:
+            # Test vs drifted_test
+            test_drift = detect_drift(paths["test_path"], paths["drifted_test_path"])
+            mlflow.log_param("test_drift_detected", test_drift["drift_detected"])
+            mlflow.log_param(
+                "test_overall_drift_score", test_drift.get("overall_drift_score", None)
+            )
+            with tempfile.TemporaryDirectory() as td:
+                p = os.path.join(td, "drift_report_test.json")
+                with open(p, "w") as f:
+                    json.dump(test_drift, f, indent=2)
+                mlflow.log_artifact(p, artifact_path="drift")
+            if test_drift["drift_detected"]:
+                raise ValueError(
+                    "Data drift detected in TEST set! Model retraining required."
+                )
 
-    # End: pipeline_complete (simple completion task)
-    @task(task_id="pipeline_complete")
-    def pipeline_complete():
-        print("✅ Pipeline complete — no drift detected.")
+            # Train vs drifted_train (if available)
+            if os.path.exists(paths["drifted_train_path"]):
+                train_drift = detect_drift(
+                    paths["train_path"], paths["drifted_train_path"]
+                )
+                mlflow.log_param("train_drift_detected", train_drift["drift_detected"])
+                mlflow.log_param(
+                    "train_overall_drift_score",
+                    train_drift.get("overall_drift_score", None),
+                )
+                with tempfile.TemporaryDirectory() as td:
+                    p = os.path.join(td, "drift_report_train.json")
+                    with open(p, "w") as f:
+                        json.dump(train_drift, f, indent=2)
+                    mlflow.log_artifact(p, artifact_path="drift")
+                if train_drift["drift_detected"]:
+                    raise ValueError(
+                        "Data drift detected in TRAIN set! Model retraining required."
+                    )
+
+            run_id = r.info.run_id
+
+        print(
+            f"🛰️  View drift run at: {MLFLOW_URI}/#/experiments/{exp_id}/runs/{run_id}"
+        )
+        print(f"🧪 View experiment at: {MLFLOW_URI}/#/experiments/{exp_id}")
         return True
 
-    # Orchestration / Dependencies
-    paths = preprocess_data()
-    fe_paths = feature_engineering(paths)
-    train_out = train_model(paths, fe_paths)
-    _eval = evaluate_model(paths, fe_paths, train_out)
-
-    # The PythonOperator does not take XCom; it uses fixed file paths under /data and writes /reports/drift_report.json
-    _eval >> drift_detection >> branch_on_drift
-    fe_paths_for_end = fe_paths  # just to be explicit in the graph
-
-    # Branch targets
-    retrain = retrain_model(fe_paths_for_end)
-    complete = pipeline_complete()
-
-    branch_on_drift >> [retrain, complete]
+    # Orchestration
+    paths = step_preprocess()
+    fe = feature_engineering(paths)
+    train_out = step_train(fe)
+    _ = step_evaluate(fe, train_out)
+    _ = drift_detection_task(paths)
 
 
 dag = pipeline()

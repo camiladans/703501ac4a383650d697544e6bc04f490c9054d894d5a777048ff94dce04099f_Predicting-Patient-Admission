@@ -6,19 +6,19 @@ Summary
 End-to-end training and logging for a binary classification model
 (IN vs OUT) with MLflow. This module:
 
-1) Sets MLflow tracking to an MLflow server at http://localhost:5000
+1) Points MLflow tracking to a server (respects MLFLOW_TRACKING_URI, defaults to http://mlflow:5000)
 2) Trains a RandomForest or LogisticRegression with recall-oriented tuning
-3) Logs three hyperparameters (per model type)
+3) Logs exactly three hyperparameters (per model type)
 4) Saves model artifacts under ./mlflow/artifacts/
-5) Logs a Custom PyFunc wrapper (spec-compliant) to MLflow
-   - Wrapper loads optional preprocessor & feature_names
-   - Wrapper's predict() applies preprocessing (if present) and returns labels
+5) Logs a spec-compliant Custom PyFunc wrapper to MLflow
+   - Wrapper (optionally) applies a saved preprocessor (e.g., column orderer)
+   - Wrapper’s predict() returns labels (thresholding is handled during training/metrics)
 
 How to run (example)
 --------------------
 python -m src.model_training
 
-Can also import `train_and_log()` from other code (e.g., Airflow task).
+You can also import `train_and_log()` from other code (e.g., Airflow task).
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from __future__ import annotations
 # SECTION 0 — Imports & Constants
 # ===============================
 import json
+import os
 from pathlib import Path
 from typing import Iterable, Tuple, Dict, Any
 
@@ -35,7 +36,6 @@ import mlflow
 import mlflow.pyfunc
 import numpy as np
 import pandas as pd
-import os
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -79,35 +79,51 @@ class CustomMLModel(mlflow.pyfunc.PythonModel):
     Custom MLflow PyFunc model wrapper for your trained model.
 
     What it does (per spec):
-    - Loads artifacts: model, preprocessor & feature_names
+    - Loads artifacts: model, (optional) preprocessor, (optional) feature_names
     - predict(): applies preprocessing if available and returns model.predict(...) labels
     - No thresholding and no feature reordering logic inside predict()
 
     Note:
-    - If you need thresholded outputs or probabilities, do that OUTSIDE this class.
+    - Threshold selection is performed during training and persisted as an artifact.
+      Use it outside this class if you want probability-to-label conversion at inference.
     """
 
     def __init__(self):
         self.model = None
         self.preprocessor = None  # scaler/encoder/column-ordering pipeline (optional)
         self.feature_names = None  # loaded but not enforced inside predict()
+        # Lazy-load support: remember artifact file paths and load on first predict()
+        self._artifact_paths: Dict[str, str] = {}
 
     def load_context(self, context):
-        """Load model artifacts from MLflow context."""
-        # Required
-        self.model = joblib.load(context.artifacts["model"])
+        """Record artifact file paths; lazily load heavy pickles to avoid save-time issues."""
+        self._artifact_paths = dict(context.artifacts or {})
+        # Tiny text artifacts are fine to read eagerly
+        if "feature_names" in self._artifact_paths:
+            try:
+                with open(self._artifact_paths["feature_names"], "r") as f:
+                    self.feature_names = [ln.strip() for ln in f if ln.strip()]
+            except Exception:
+                self.feature_names = None
 
-        # Optional preprocessor
-        if "preprocessor" in context.artifacts:
-            self.preprocessor = joblib.load(context.artifacts["preprocessor"])
-
-        # Optional feature names (informational only)
-        if "feature_names" in context.artifacts:
-            with open(context.artifacts["feature_names"], "r") as f:
-                self.feature_names = [ln.strip() for ln in f if ln.strip()]
+    def _ensure_loaded(self):
+        """Lazy-load heavy artifacts (model, preprocessor) on first use."""
+        if self.model is None and "model" in self._artifact_paths:
+            try:
+                self.model = joblib.load(self._artifact_paths["model"])
+            except Exception as e:
+                raise RuntimeError(f"Failed to load model artifact: {e}")
+        if self.preprocessor is None and "preprocessor" in self._artifact_paths:
+            try:
+                self.preprocessor = joblib.load(self._artifact_paths["preprocessor"])
+            except Exception:
+                # Preprocessor is optional; continue without it
+                self.preprocessor = None
 
     def predict(self, context, model_input: pd.DataFrame) -> np.ndarray:
         """Make predictions using the trained model."""
+        self._ensure_loaded()
+
         if self.preprocessor is not None:
             processed_input = self.preprocessor.transform(model_input)
         else:
@@ -338,24 +354,22 @@ def train_model(
 # ======================================================
 # SECTION 4 — Train & Log (meets the checklist)
 # ======================================================
-
-
 def train_and_log(
     train_data: pd.DataFrame,
     *,
     model_type: str = "rf",
     target_recall: float = 0.90,
     random_state: int = 42,
-    experiment: str = "patient_admission_v3",  # for new experiments, update name
+    experiment: str = "patient_admission_v2",  # use a new name if old experiment has local artifact path
     run_name: str = "training-run",
-    tracking_uri: str | None = None,  # <— allow explicit override
+    tracking_uri: str | None = None,  # allow explicit override
 ) -> str:
     """
-    - Set tracking URI: http://localhost:5000
+    - Set tracking URI (from arg/env; defaults to http://mlflow:5000)
     - Wrap training in mlflow.start_run()
-    - Log 3 hyperparameters (by model type)
-      * Classification (RF): n_estimators, max_depth, random_state
-      * Classification (LogReg): C, max_iter, random_state (justify in README)
+    - Log EXACTLY 3 hyperparameters:
+        RF: n_estimators, max_depth, random_state
+        LogReg: C, max_iter, random_state
     - Save model artifacts under ./mlflow/artifacts/
     - Log model using custom PyFunc wrapper
     """
@@ -404,7 +418,6 @@ def train_and_log(
         mlflow.log_params(to_log)
 
         # 4) Stage artifacts under ./mlflow/artifacts/ then log them
-        #    (these staged files are the sources for the PyFunc artifacts argument)
         model_path = ARTIFACT_STAGING_DIR / "model.pkl"
         preproc_path = ARTIFACT_STAGING_DIR / "preprocessor.pkl"
         fnames_path = ARTIFACT_STAGING_DIR / "feature_names.txt"
@@ -445,6 +458,7 @@ def train_and_log(
         if threshold_path.exists():
             artifacts["threshold"] = str(threshold_path)
 
+        # NOTE: keep artifact_path for broad compatibility; newer MLflow warns it's deprecated in favor of name=
         mlflow.pyfunc.log_model(
             artifact_path="model",  # appears under the run's artifacts
             python_model=CustomMLModel(),  # our spec-compliant wrapper
@@ -454,27 +468,3 @@ def train_and_log(
         run_id = mlflow.active_run().info.run_id
         print(f"Logged MLflow run_id: {run_id}")
         return run_id
-
-
-# ======================================================
-# SECTION 5 — CLI Demo (safe to delete)
-# ======================================================
-if __name__ == "__main__":
-    # Minimal demo dataset
-    df = pd.DataFrame(
-        {
-            "f1": [0.1, 0.2, 0.3, 0.4, 0.5],
-            "f2": [1, 0, 1, 0, 1],
-            "SOURCE": ["IN", "OUT", "IN", "OUT", "IN"],
-        }
-    )
-    # Train + log (RandomForest by default)
-    run_id = train_and_log(
-        df,
-        model_type="rf",  # or "logreg"
-        target_recall=0.80,
-        random_state=42,
-        experiment="patient_admission_v3",
-        run_name="rf-inpatient-demo",
-    )
-    print("Run complete:", run_id)

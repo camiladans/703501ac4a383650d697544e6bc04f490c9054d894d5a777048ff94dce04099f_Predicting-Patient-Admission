@@ -346,7 +346,7 @@ def train_and_log(
     model_type: str = "rf",
     target_recall: float = 0.90,
     random_state: int = 42,
-    experiment: str = "patient_admission_v2",  # for new experiments, update name
+    experiment: str = "patient_admission_v3",  # for new experiments, update name
     run_name: str = "training-run",
     tracking_uri: str | None = None,  # <— allow explicit override
 ) -> str:
@@ -474,7 +474,7 @@ if __name__ == "__main__":
         model_type="rf",  # or "logreg"
         target_recall=0.80,
         random_state=42,
-        experiment="patient_admission",
+        experiment="patient_admission_v3",
         run_name="rf-inpatient-demo",
     )
     print("Run complete:", run_id)

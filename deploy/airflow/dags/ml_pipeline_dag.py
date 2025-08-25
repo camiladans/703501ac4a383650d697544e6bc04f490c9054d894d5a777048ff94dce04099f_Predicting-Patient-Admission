@@ -152,8 +152,10 @@ def pipeline():
         """Ingest, preprocess (creates drifted copies), and save train/test CSVs."""
         import pandas as pd
 
-        df_or_path = ingest_data(source_path=RAW_SOURCE)
-        df = pd.read_csv(df_or_path) if isinstance(df_or_path, str) else df_or_path
+        df = ingest_data(
+            input_path="/opt/airflow/repo/data/raw/data-ori.csv",
+            canonical_path="/opt/airflow/repo/data/raw/data-ori.csv",
+        )
 
         (
             X_train,
@@ -192,7 +194,13 @@ def pipeline():
         Reads data/train.csv & data/test.csv; writes data/train_fe.csv & data/test_fe.csv.
         Uses src/feature_engineering.run_feature_engineering().
         """
-        return run_feature_engineering(paths["train_path"], paths["test_path"])
+
+        out = run_feature_engineering(
+            train_csv=paths["train_path"],
+            test_csv=paths["test_path"],
+            target_col=TARGET_COL,
+        )
+        return out  # {"train_fe": "...", "test_fe": "..."}
 
     # ---------------------------------------------------------------------
     # 3) train_model  (TaskFlow API)

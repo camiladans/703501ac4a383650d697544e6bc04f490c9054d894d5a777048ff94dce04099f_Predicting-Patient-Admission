@@ -93,6 +93,7 @@ import json
 import logging
 import os
 import sys
+import pandas as pd
 
 # --- airflow ---
 from airflow.decorators import dag, task
@@ -150,11 +151,10 @@ def pipeline():
     @task(task_id="preprocess_data")
     def preprocess_task() -> dict:
         """Ingest, preprocess (creates drifted copies), and save train/test CSVs."""
-        import pandas as pd
 
         df = ingest_data(
-            input_path="/opt/airflow/repo/data/raw/data-ori.csv",
-            canonical_path="/opt/airflow/repo/data/raw/data-ori.csv",
+            input_path="/app/data/raw/data-ori.csv",
+            canonical_path="/app/data/raw/data-ori.csv",
         )
 
         (
@@ -176,6 +176,14 @@ def pipeline():
         )
         pd.concat([X_test, y_test.rename(TARGET_COL)], axis=1).to_csv(
             test_path, index=False
+        )
+
+        # write drifted copies (input for drift_detection)
+        pd.concat(
+            [_X_train_drifted, _y_train_drifted.rename(TARGET_COL)], axis=1
+        ).to_csv("data/drifted_train.csv", index=False)
+        pd.concat([_X_test_drifted, _y_test_drifted.rename(TARGET_COL)], axis=1).to_csv(
+            "data/drifted_test.csv", index=False
         )
 
         return {

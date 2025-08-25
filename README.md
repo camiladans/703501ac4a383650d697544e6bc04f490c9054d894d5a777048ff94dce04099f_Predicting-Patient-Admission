@@ -216,7 +216,13 @@ Watch task logs
 docker compose logs -f airflow-scheduler
 ```
 
-Check artifacts & reports
+### Validate drift detection
+
+```bash
+cat reports/drift_report.json
+```
+
+### Check artifacts & reports
 ```bash
 # Evaluation metrics (accuracy, recall)
 cat reports/evaluation_results.json
@@ -236,25 +242,6 @@ You should see: runs under patient_experiments_v3, logged metrics, and the model
 ```bash
 export MLFLOW_URI="file:./mlruns"
 python -m src.run_pipeline
-```
-
-### Trigger Airflow DAG manually
-
-```bash
-docker compose exec -T airflow-scheduler \
-  airflow dags trigger ml_pipeline_dag
-```
-
-### Check DAG task logs
-
-```bash
-docker compose logs -f airflow-scheduler
-```
-
-### Validate drift detection
-
-```bash
-cat reports/drift_report.json
 ```
 
 ---

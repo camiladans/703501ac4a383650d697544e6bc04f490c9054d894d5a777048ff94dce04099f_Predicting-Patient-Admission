@@ -66,7 +66,9 @@ def run_pipeline() -> None:
             logger.debug("Could not set MLflow experiment to %s", exp)
 
     # 0) Ingest raw data -> DataFrame
-    df = ingest_data(source_path="data/raw/data-ori.csv")
+    df = ingest_data(
+        input_path="data/raw/data-ori.csv", canonical_path="data/raw/data-ori.csv"
+    )
 
     # 1) Preprocess (returns splits and writes drifted CSVs)
     (
@@ -90,7 +92,28 @@ def run_pipeline() -> None:
 
     with mlflow.start_run() as run:
         # 2) Train
-        model = train_model(X_train, y_train)
+        model, train_metrics, feature_names, best_params = train_model(X_train, y_train)
+
+        # (optional) print/log training metrics so you can see them
+        print("Training metrics:", train_metrics)
+
+        # If your y_test is strings like "in"/"out", map to {0,1} to match the scorer expectations
+        try:
+            import pandas as pd
+
+            if not pd.api.types.is_integer_dtype(y_test):
+                y_test = (
+                    pd.Series(y_test)
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .map({"in": 1, "out": 0})
+                )
+                if y_test.isna().any():
+                    raise ValueError("y_test contains labels other than IN/OUT.")
+                y_test = y_test.astype(int)
+        except Exception as e:
+            print("Note:", e)
 
         # 3) Evaluate
         metrics = evaluate_model(model, X_test, y_test)

@@ -1,50 +1,123 @@
 # src/data_ingestion.py
 """
-Loads/downloads the dataset into data/raw/ and returns the local CSV path.
-Designed to feed directly into preprocess_data(path=...).
+Module: data_ingestion.py
+
+Reads a raw dataset (CSV or Parquet), optionally validates/filters columns,
+writes a canonical copy to disk, and RETURNS a pandas.DataFrame for downstream
+steps (preprocessing, feature engineering, training).
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional, Sequence
+
 import pandas as pd
 
-RAW_DIR = Path("data/raw")
-RAW_DIR.mkdir(parents=True, exist_ok=True)
-DEFAULT_SAVE = RAW_DIR / "data-ori.csv"
+# --------------------------------------------------------------------
+# Logger setup
+# --------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 
-def ingest_data(
-    source_path: Optional[str] = None, save_path: Path = DEFAULT_SAVE
-) -> str:
-    """
-    Ingest dataset and save to data/raw/, returning the local path.
+# --------------------------------------------------------------------
+# Helper functions
+# --------------------------------------------------------------------
+def _ensure_parent_dir(path: Path) -> None:
+    """Ensure parent directories exist for a given path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    Args:
-        source_path: Local CSV path or URL. If None, require that save_path already exists.
-        save_path:   Where to store the canonical CSV (default: data/raw/data-ori.csv).
 
-    Returns:
-        str: Absolute/relative path to the saved CSV for downstream use.
-    """
-    save_path = Path(save_path)
+def _read_table(path: Path) -> pd.DataFrame:
+    """Read CSV or Parquet based on file extension."""
+    suffix = path.suffix.lower()
+    if suffix in {".csv", ".txt"}:
+        return pd.read_csv(path)
+    if suffix in {".parquet", ".pq"}:
+        return pd.read_parquet(path)
+    raise ValueError(f"Unsupported file type for: {path}")
 
-    if source_path is None:
-        if save_path.exists():
-            print(f"[ingestion] Using existing dataset at {save_path}")
-            return str(save_path)
-        raise FileNotFoundError(
-            f"No source_path provided and {save_path} does not exist."
+
+def _write_csv(df: pd.DataFrame, path: Path) -> None:
+    _ensure_parent_dir(path)
+    df.to_csv(path, index=False)
+
+
+def _validate_expected(df: pd.DataFrame, expected_cols: Iterable[str]) -> None:
+    missing = [c for c in expected_cols if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Missing expected columns: {missing}. Present columns: {list(df.columns)}"
         )
 
-    # Read from local CSV or URL; pandas handles both.
-    print(f"[ingestion] Reading dataset from: {source_path}")
-    df = pd.read_csv(source_path, encoding_errors="ignore")
 
-    # Ensure parent dir exists and write canonical copy
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(save_path, index=False)
-    print(f"[ingestion] Saved canonical dataset to: {save_path}")
+# --------------------------------------------------------------------
+# Main ingestion function
+# --------------------------------------------------------------------
+def ingest_data(
+    input_path: str | Path,
+    canonical_path: str | Path,
+    *,
+    expected_cols: Optional[Sequence[str]] = None,
+    keep_cols: Optional[Sequence[str]] = None,
+    save_canonical: bool = True,
+) -> pd.DataFrame:
+    """
+    Read raw data, optionally validate/trim columns, write canonical copy, return DataFrame.
 
-    return str(save_path)
+    Parameters
+    ----------
+    input_path : str | Path
+        Source file (CSV or Parquet).
+    canonical_path : str | Path
+        Where to write the canonical CSV copy (usually under data/raw/).
+    expected_cols : Sequence[str], optional
+        If provided, validate that ALL these columns exist in the input.
+    keep_cols : Sequence[str], optional
+        If provided, return ONLY these columns (will validate they exist).
+    save_canonical : bool, default True
+        If True, write a canonical CSV to `canonical_path`.
+
+    Returns
+    -------
+    pd.DataFrame
+        The loaded (and optionally filtered) DataFrame.
+    """
+    in_path = Path(str(input_path))
+    can_path = Path(str(canonical_path))
+
+    logger.info(f"[ingestion] Reading dataset from: {in_path}")
+    if not in_path.exists():
+        raise FileNotFoundError(f"Input file not found: {in_path}")
+
+    df = _read_table(in_path)
+
+    # Validate schema if requested
+    if expected_cols is not None:
+        _validate_expected(df, expected_cols)
+
+    # Keep only requested columns if provided
+    if keep_cols is not None:
+        _validate_expected(df, keep_cols)
+        df = df.loc[:, list(keep_cols)]
+
+    # Write canonical CSV copy
+    if save_canonical:
+        _write_csv(df, can_path)
+        logger.info(f"[ingestion] Saved canonical dataset to: {can_path}")
+
+    logger.info(f"[ingestion] Loaded shape: {df.shape}")
+    return df
+
+
+__all__ = ["ingest_data"]

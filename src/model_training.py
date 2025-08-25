@@ -233,34 +233,73 @@ def _select_threshold_for_recall(
 # SECTION 3 — Training (recall-oriented) + metrics
 # ======================================================
 def train_model(
-    train_data: pd.DataFrame,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    *,
     model_type: str = "rf",
     target_recall: float = 0.90,
     random_state: int = 42,
+    X_valid: pd.DataFrame | None = None,
+    y_valid: pd.Series | None = None,
 ) -> Tuple[Pipeline, Dict[str, Any], Iterable[str], Dict[str, Any]]:
-    """
-    Train a classifier with recall-oriented tuning and return:
-      - best pipeline (orderer + estimator),
-      - metrics dict,
-      - feature_names,
-      - best_params (for logging exactly 3 hyperparameters).
-    """
-    print("Train data columns:", train_data.columns.tolist())
-    if "SOURCE" not in train_data.columns:
-        raise KeyError("The column 'SOURCE' is missing from the input DataFrame.")
+    # --- force X to numeric + y to {0,1} ---
+    X_train = _coerce_features_numeric(pd.DataFrame(X_train))
 
-    # Encode target: IN -> 1 else 0
-    y = train_data["SOURCE"].apply(lambda x: 1 if str(x).upper() == "IN" else 0)
+    y_train = pd.Series(y_train)
 
-    # Sanitize features to numeric
-    X = train_data.drop(columns=["SOURCE"])
-    X = _coerce_features_numeric(X)
-    feature_names = list(X.columns)
+    # map many possibilities to {0,1}; fall back to string-compare
+    if not pd.api.types.is_integer_dtype(y_train) and not pd.api.types.is_bool_dtype(
+        y_train
+    ):
+        y_train = (
+            y_train.astype(str)
+            .str.strip()
+            .str.lower()
+            .map({"in": 1, "out": 0, "1": 1, "0": 0, "true": 1, "false": 0})
+        )
 
-    # Split
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=random_state, stratify=y
-    )
+    # if any NaNs still, try uppercase IN/OUT fallback
+    if y_train.isna().any():
+        y_train = (
+            pd.Series(y_train)
+            .astype(object)
+            .where(~y_train.isna(), other=pd.Series(y_train.index).map(lambda _: None))
+        )  # keep index
+        y_train = pd.Series(
+            y_train
+        ).fillna(  # re-fill using original labels cast to str
+            pd.Series(y_train.index).map(lambda _: None)
+        )  # no-op, but keeps structure
+
+    # final strict conversion using original labels
+    if y_train.isna().any():
+        raise ValueError(
+            "y_train contains labels other than IN/OUT (or 0/1). Please clean labels."
+        )
+    y_train = y_train.astype(int)
+
+    feature_names = list(X_train.columns)
+
+    # Validation split
+    if X_valid is None or y_valid is None:
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=0.2, random_state=random_state, stratify=y_train
+        )
+    else:
+        X_val = _coerce_features_numeric(pd.DataFrame(X_valid))
+        y_val = pd.Series(y_valid)
+        if not pd.api.types.is_integer_dtype(y_val) and not pd.api.types.is_bool_dtype(
+            y_val
+        ):
+            y_val = (
+                y_val.astype(str)
+                .str.strip()
+                .str.lower()
+                .map({"in": 1, "out": 0, "1": 1, "0": 0, "true": 1, "false": 0})
+            )
+        if y_val.isna().any():
+            raise ValueError("y_valid contains labels other than IN/OUT (or 0/1).")
+        y_val = y_val.astype(int)
 
     # Objective: maximize recall for positive class (1)
     recall_pos1 = make_scorer(recall_score, pos_label=1)
@@ -286,7 +325,6 @@ def train_model(
     # Column alignment preprocessor
     orderer = _make_feature_order_preprocessor(feature_names)
 
-    # Pipeline ensures validation uses the same preprocessing as inference
     pipe = Pipeline(
         steps=[
             ("orderer", orderer),
@@ -305,7 +343,7 @@ def train_model(
     grid.fit(X_train, y_train)
     best_pipe = grid.best_estimator_
 
-    # Validation probabilities / scores
+    # Validation probs/scores
     est = best_pipe.named_steps["est"]
     if hasattr(est, "predict_proba"):
         p_val = best_pipe.predict_proba(X_val)[:, 1]
@@ -333,7 +371,7 @@ def train_model(
         "confusion_matrix": cm.tolist(),
     }
 
-    # Extract best params (used later to log EXACTLY 3 hyperparameters)
+    # Extract best params (log exactly 3 later)
     best_params: Dict[str, Any] = {}
     if isinstance(est, RandomForestClassifier):
         best_params = {
@@ -352,7 +390,7 @@ def train_model(
 
 
 # ======================================================
-# SECTION 4 — Train & Log (meets the checklist)
+# SECTION 4 — Train & Log
 # ======================================================
 def train_and_log(
     train_data: pd.DataFrame,
@@ -384,15 +422,22 @@ def train_and_log(
 
     # 2) Start run
     with mlflow.start_run(run_name=run_name):
-        # Train
+        # Train — split SOURCE into y, drop from X
+        if "SOURCE" not in train_data.columns:
+            raise KeyError("train_and_log expects 'train_data' with a 'SOURCE' column.")
+
+        y = train_data["SOURCE"].apply(lambda x: 1 if str(x).upper() == "IN" else 0)
+        X = train_data.drop(columns=["SOURCE"])
+
         model_pipe, metrics, feat_names, best_params = train_model(
-            train_data,
+            X,
+            y,
             model_type=model_type,
             target_recall=target_recall,
             random_state=random_state,
         )
 
-        # 3) Log EXACTLY three hyperparameters
+        # 3) Log hyperparameters
         est = model_pipe.named_steps["est"]
         if isinstance(est, RandomForestClassifier):
             to_log = {
@@ -407,13 +452,11 @@ def train_and_log(
                 "random_state": best_params.get("random_state", random_state),
             }
         else:
-            # If you add other model types later: choose & justify 3 params in your README
             to_log = {
                 "random_state": random_state,
                 "target_recall": target_recall,
                 "model_type": model_type,
             }
-        # strictly ensure 3 keys
         to_log = dict(list(to_log.items())[:3])
         mlflow.log_params(to_log)
 

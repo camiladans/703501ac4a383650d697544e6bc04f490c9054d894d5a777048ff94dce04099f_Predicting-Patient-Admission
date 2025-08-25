@@ -15,7 +15,7 @@ Handles raw data cleaning and normalization steps:
 from __future__ import annotations
 
 import os
-import logging  # <-- add this
+import logging
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
@@ -24,8 +24,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 logger = logging.getLogger(__name__)
-# pick ONE level; WARNING keeps Airflow logs quiet
-logging.basicConfig(level=logging.WARNING)  # <-- remove the earlier INFO line
+logging.basicConfig(level=logging.WARNING)
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -14,6 +14,7 @@ Steps:
 """
 
 from __future__ import annotations
+import pandas as pd
 
 import os
 import json
@@ -29,6 +30,7 @@ from src.data_ingestion import ingest_data
 from src.data_preprocessing import preprocess_data
 from src.model_training import train_model
 from src.evaluation import evaluate_model
+from src.threshold_sweep import run_threshold_experiments
 from src.drift_detection import detect_drift
 from src.feature_engineering import build_features
 
@@ -38,9 +40,67 @@ ACCURACY_THRESHOLD = 0.80
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# near the start of run_pipeline()
-mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
-mlflow.set_experiment(os.getenv("MLFLOW_EXPERIMENT", "patient_admission_v4"))
+MLFLOW_URI = os.environ.get("MLFLOW_URI", "http://mlflow:5000")
+EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "patient_experiments_v3")
+TARGET_COL = "SOURCE"
+
+mlflow.set_tracking_uri(MLFLOW_URI)
+mlflow.set_experiment(EXPERIMENT)
+
+RAW_PATH = os.getenv("RAW_PATH", "data/raw/data-ori.csv")  # default = local path
+
+"""
+NOTE for local run use:
+export MLFLOW_URI="file:./mlruns"
+python -m src.run_pipeline
+"""
+
+
+def resolve_raw_path() -> str:
+    candidates = [
+        "/app/data/raw/data-ori.csv",  # inside Docker
+        "data/raw/data-ori.csv",  # local
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    # fallback to local default
+    return "data/raw/data-ori.csv"
+
+
+def run_local_eval(model_uri: str, test_fe_csv: str) -> dict:
+    mlflow.set_tracking_uri(MLFLOW_URI)
+    mlflow.set_experiment(EXPERIMENT)
+
+    df_test = pd.read_csv(test_fe_csv)
+    X_test = df_test.drop(columns=[TARGET_COL])
+    y_test = df_test[TARGET_COL]
+
+    model = mlflow.pyfunc.load_model(model_uri)
+
+    with mlflow.start_run(run_name="evaluate-local"):
+        # accuracy + recall (EXACTLY TWO)
+        metrics = evaluate_model(model, X_test, y_test)
+
+        # threshold sweep
+        sweep_df, chosen = run_threshold_experiments(
+            model,
+            X_test,
+            y_test,
+            thresholds=[0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50],
+            min_recall=0.90,
+            objective="f1",
+            fallback="f1",
+            save_csv_path="reports/threshold_sweep.csv",
+            log_to_mlflow=True,
+        )
+        mlflow.log_metric("chosen_threshold_eval", float(chosen["threshold"]))
+        print(
+            f"[local] chosen threshold={chosen['threshold']:.3f} "
+            f"(recall={chosen['recall']:.3f}, precision={chosen['precision']:.3f}, "
+            f"f1={chosen['f1_score']:.3f}, acc={chosen['accuracy']:.3f})"
+        )
+        return {**metrics, "chosen_threshold": float(chosen["threshold"])}
 
 
 def _check_performance_threshold(results: Dict[str, float], threshold: float) -> bool:
@@ -65,9 +125,8 @@ def _check_performance_threshold(results: Dict[str, float], threshold: float) ->
 
 def run_pipeline() -> None:
     # 0) Ingest raw data -> DataFrame
-    df = ingest_data(
-        input_path="data/raw/data-ori.csv", canonical_path="data/raw/data-ori.csv"
-    )
+    RAW_PATH = resolve_raw_path()
+    df = ingest_data(input_path=RAW_PATH, canonical_path=RAW_PATH)
 
     # 1) Preprocess (returns splits and writes drifted CSVs)
     (

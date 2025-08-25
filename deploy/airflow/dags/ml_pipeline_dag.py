@@ -87,13 +87,13 @@ Troubleshooting
   for scheduler/webserver/apiserver.
 """
 
-# --- stdlib ---
 from datetime import datetime
 import json
 import logging
 import os
 import sys
 import pandas as pd
+import mlflow
 
 # --- airflow ---
 from airflow.decorators import dag, task
@@ -111,6 +111,8 @@ from src.feature_engineering import run_feature_engineering  # noqa: E402
 from src.model_training import train_and_log  # noqa: E402
 from src.evaluation import evaluate_model  # noqa: E402
 from src.drift_detection import detect_drift  # noqa: E402
+
+
 from mlflow.tracking import MlflowClient
 
 logger = logging.getLogger(__name__)
@@ -134,7 +136,6 @@ MLFLOW_URI = "http://mlflow:5000"
 EXPERIMENT = "patient_experiments_v3"  # <<< keep consistent across tasks
 
 TARGET_COL = "SOURCE"
-RAW_SOURCE = "/app/data/raw/data-ori.csv"  # path inside container
 
 
 @dag(
@@ -219,8 +220,6 @@ def pipeline():
         Train on train_fe.csv and log model to MLflow (PyFunc).
         Returns {'model_uri': 'runs:/<run_id>/model'}.
         """
-        import pandas as pd
-        import mlflow
 
         mlflow.set_tracking_uri(MLFLOW_URI)
         exp_id = ensure_experiment(EXPERIMENT)
@@ -250,9 +249,8 @@ def pipeline():
     # ---------------------------------------------------------------------
     @task(task_id="evaluate_model")
     def evaluate_task(fe: dict, train_out: dict) -> dict:
-        """Load model via MLflow URI (pyfunc) and evaluate on test_fe.csv; log metrics."""
-        import pandas as pd
-        import mlflow
+        """Load model via MLflow URI (pyfunc) and evaluate on test_fe.csv;
+        log accuracy+recall, and run threshold sweep to choose a threshold."""
 
         mlflow.set_tracking_uri(MLFLOW_URI)
         exp_id = ensure_experiment(EXPERIMENT)
@@ -273,10 +271,38 @@ def pipeline():
                     pass
             run_id = r.info.run_id
 
+            # 2) Threshold sweep only if model exposes probabilities
+            def _has_probs(m):
+                return hasattr(m, "predict_proba") or hasattr(m, "decision_function")
+
+            if _has_probs(model):
+                from src.threshold_sweep import run_threshold_experiments
+
+                sweep_df, chosen = run_threshold_experiments(
+                    model,
+                    X_test,
+                    y_test,
+                    thresholds=[0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50],
+                    min_recall=0.90,
+                    objective="f1",
+                    fallback="f1",
+                    save_csv_path="reports/threshold_sweep.csv",
+                    log_to_mlflow=True,
+                )
+                mlflow.log_metric("chosen_threshold_eval", float(chosen["threshold"]))
+            else:
+                mlflow.set_tag("threshold_sweep_skipped", "no_predict_proba")
+                mlflow.log_metric("chosen_threshold_eval", 0.5)
+
         print(
             f"📏 View evaluation run at: {MLFLOW_URI}/#/experiments/{exp_id}/runs/{run_id}"
         )
-        return metrics
+
+        # Return both the scalar metrics and the chosen threshold via XCom
+        return {
+            **metrics,
+            "chosen_threshold": float(chosen["threshold"]),
+        }
 
     # ---------------------------------------------------------------------
     # 5) drift_detection  (PythonOperator required by spec)
@@ -323,8 +349,6 @@ def pipeline():
     @task(task_id="retrain_model")
     def retrain_task() -> dict:
         """Retrain on *original* non-drifted train_fe.csv and log to MLflow."""
-        import pandas as pd
-        import mlflow
 
         train_fe_path = "data/train_fe.csv"  # original FE output
         if not os.path.exists(train_fe_path):

@@ -94,6 +94,7 @@ import os
 import sys
 import pandas as pd
 import mlflow
+import mlflow.sklearn
 
 # --- airflow ---
 from airflow.decorators import dag, task
@@ -111,7 +112,7 @@ from src.feature_engineering import run_feature_engineering  # noqa: E402
 from src.model_training import train_and_log  # noqa: E402
 from src.evaluation import evaluate_model  # noqa: E402
 from src.drift_detection import detect_drift  # noqa: E402
-
+from src.threshold_sweep import run_threshold_experiments
 
 from mlflow.tracking import MlflowClient
 
@@ -270,29 +271,50 @@ def pipeline():
                 except Exception:
                     pass
             run_id = r.info.run_id
+            # 2) Threshold sweep (guarded)
+            chosen = None
+            try:
+                # Prefer sklearn flavor if you logged it; else use pyfunc only if it can give probs
+                sk_model = None
+                try:
+                    sk_uri = train_out.get("sk_model_uri")
+                    if sk_uri:
+                        sk_model = mlflow.sklearn.load_model(sk_uri)
+                except Exception:
+                    sk_model = None
 
-            # 2) Threshold sweep only if model exposes probabilities
-            def _has_probs(m):
-                return hasattr(m, "predict_proba") or hasattr(m, "decision_function")
+                def _has_probs(m):
+                    return hasattr(m, "predict_proba") or hasattr(
+                        m, "decision_function"
+                    )
 
-            if _has_probs(model):
-                from src.threshold_sweep import run_threshold_experiments
-
-                sweep_df, chosen = run_threshold_experiments(
-                    model,
-                    X_test,
-                    y_test,
-                    thresholds=[0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50],
-                    min_recall=0.90,
-                    objective="f1",
-                    fallback="f1",
-                    save_csv_path="reports/threshold_sweep.csv",
-                    log_to_mlflow=True,
+                sweep_model = (
+                    sk_model
+                    if sk_model is not None
+                    else (model if _has_probs(model) else None)
                 )
-                mlflow.log_metric("chosen_threshold_eval", float(chosen["threshold"]))
-            else:
-                mlflow.set_tag("threshold_sweep_skipped", "no_predict_proba")
-                mlflow.log_metric("chosen_threshold_eval", 0.5)
+                if sweep_model is not None:
+                    sweep_df, chosen = run_threshold_experiments(
+                        sweep_model,
+                        X_test,
+                        y_test,
+                        thresholds=[0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50],
+                        min_recall=0.90,
+                        objective="f1",
+                        fallback="f1",
+                        save_csv_path="reports/threshold_sweep.csv",
+                        log_to_mlflow=True,
+                    )
+                    mlflow.log_metric(
+                        "chosen_threshold_eval", float(chosen["threshold"])
+                    )
+                else:
+                    mlflow.set_tag("threshold_sweep_skipped", "no_predict_proba")
+                    mlflow.log_metric("chosen_threshold_eval", 0.2)
+            except Exception as e:
+                # If sweep threw, don't fail the task—log and continue
+                mlflow.set_tag("threshold_sweep_error", type(e).__name__)
+                mlflow.log_metric("chosen_threshold_eval", 0.2)
 
         print(
             f"📏 View evaluation run at: {MLFLOW_URI}/#/experiments/{exp_id}/runs/{run_id}"
@@ -301,7 +323,9 @@ def pipeline():
         # Return both the scalar metrics and the chosen threshold via XCom
         return {
             **metrics,
-            "chosen_threshold": float(chosen["threshold"]),
+            "chosen_threshold": float(chosen["threshold"])
+            if chosen is not None
+            else 0.5,
         }
 
     # ---------------------------------------------------------------------

@@ -30,6 +30,7 @@ from src.data_preprocessing import preprocess_data
 from src.model_training import train_model
 from src.evaluation import evaluate_model
 from src.drift_detection import detect_drift
+from src.feature_engineering import build_features
 
 MODEL_NAME = "patient_admission_classifier"
 ACCURACY_THRESHOLD = 0.80
@@ -80,6 +81,9 @@ def run_pipeline() -> None:
         y_test_drifted,
     ) = preprocess_data(df, target_col="SOURCE")
 
+    X_train = build_features(X_train)
+    X_test = build_features(X_test)
+
     # Save non-drifted train/test for drift_detection inputs
     os.makedirs("data", exist_ok=True)
     train_path = "data/train.csv"
@@ -123,15 +127,7 @@ def run_pipeline() -> None:
         meets_perf = _check_performance_threshold(metrics, ACCURACY_THRESHOLD)
 
         # 5) Log model & register
-        from mlflow.models import infer_signature
-
-        signature = infer_signature(X_train, model.predict(X_train))
-        mlflow.sklearn.log_model(
-            model,
-            artifact_path="model",
-            signature=signature,
-            input_example=X_train.head(5),
-        )
+        mlflow.sklearn.log_model(model, artifact_path="model")
 
         run_id = run.info.run_id
         model_uri = f"runs:/{run_id}/model"

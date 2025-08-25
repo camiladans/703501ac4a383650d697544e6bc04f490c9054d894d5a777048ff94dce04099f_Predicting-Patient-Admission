@@ -134,7 +134,7 @@ def ensure_experiment(name: str) -> str:
 
 # In Docker, prefer service name "mlflow" rather than localhost
 MLFLOW_URI = "http://mlflow:5000"
-EXPERIMENT = "patient_experiments_v3"  # <<< keep consistent across tasks
+EXPERIMENT = "patient_experiments_v3"
 
 TARGET_COL = "SOURCE"
 
@@ -243,7 +243,10 @@ def pipeline():
         print(f"🧪 View experiment at: {MLFLOW_URI}/#/experiments/{exp_id}")
 
         model_uri = f"runs:/{run_id}/model"
-        return {"model_uri": model_uri}
+        return {
+            "model_uri": model_uri,
+            "sk_model_uri": model_uri,  # same path for now
+        }
 
     # ---------------------------------------------------------------------
     # 4) evaluate_model  (TaskFlow API)
@@ -261,7 +264,26 @@ def pipeline():
         X_test = df_test.drop(columns=[TARGET_COL])
         y_test = df_test[TARGET_COL]
 
-        model = mlflow.pyfunc.load_model(train_out["model_uri"])
+        model = None
+        model_uri = train_out.get("model_uri")
+
+        try:
+            model = mlflow.pyfunc.load_model(model_uri)
+        except Exception:
+            # fallback to sklearn flavor if present
+            sk_uri = train_out.get("sk_model_uri")
+            if sk_uri:
+                model = mlflow.sklearn.load_model(sk_uri)
+            else:
+                # can help debug: list artifacts to see what was logged
+                from mlflow.tracking import MlflowClient
+
+                client = MlflowClient()
+                run_id = model_uri.split("/")[1]  # runs:/<run_id>/...
+                arts = client.list_artifacts(run_id, path="")
+                print("Artifacts in run:", [a.path for a in arts])
+                raise
+
         metrics = evaluate_model(model, X_test, y_test)
 
         with mlflow.start_run(run_name="evaluate") as r:
@@ -274,7 +296,7 @@ def pipeline():
             # 2) Threshold sweep (guarded)
             chosen = None
             try:
-                # Prefer sklearn flavor if you logged it; else use pyfunc only if it can give probs
+                # Prefer sklearn flavor if logeed; else use pyfunc only
                 sk_model = None
                 try:
                     sk_uri = train_out.get("sk_model_uri")
@@ -325,7 +347,7 @@ def pipeline():
             **metrics,
             "chosen_threshold": float(chosen["threshold"])
             if chosen is not None
-            else 0.5,
+            else 0.2,
         }
 
     # ---------------------------------------------------------------------
@@ -333,7 +355,7 @@ def pipeline():
     # ---------------------------------------------------------------------
     def _drift_callable():
         """Call detect_drift() and rely on it to write reports/drift_report.json."""
-        # We compare clean test vs drifted_test (filenames are deterministic)
+        # compare clean test vs drifted_test (filenames are deterministic)
         detect_drift("data/test.csv", "data/drifted_test.csv")
         # detect_drift prints the path and dict; no XCom here per spec.
 
@@ -349,7 +371,7 @@ def pipeline():
         """Return task_id 'retrain_model' if drift_detected, else 'pipeline_complete'."""
         report_path = "reports/drift_report.json"
         if not os.path.exists(report_path):
-            # Conservative: if the file isn't there, do not retrain (treat as no drift)
+            # Conservative: if the file isn't there, no retrain (treat as no drift)
             logger.warning(
                 "Drift report not found at %s; proceeding to pipeline_complete.",
                 report_path,

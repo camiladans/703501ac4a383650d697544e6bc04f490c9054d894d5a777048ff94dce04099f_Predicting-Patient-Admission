@@ -410,7 +410,7 @@ def train_and_log(
     - Save model artifacts under ./mlflow/artifacts/
     - Log model using custom PyFunc wrapper
     """
-    # 1) Point to your MLflow server
+    # 1) Point to MLflow server
     uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     mlflow.set_tracking_uri(uri)
     _ = _ensure_experiment(experiment)
@@ -501,6 +501,12 @@ def train_and_log(
             artifacts["threshold"] = str(threshold_path)
 
         # NOTE: keep artifact_path for broad compatibility; newer MLflow warns it's deprecated in favor of name=
+        mlflow.pyfunc.log_model(
+            artifact_path="model",  # appears under the run's artifacts
+            python_model=CustomMLModel(),  # our spec-compliant wrapper
+            artifacts=artifacts,  # files staged under ./mlflow/artifacts/
+        )
+
         mlflow.pyfunc.log_model(
             artifact_path="model",  # appears under the run's artifacts
             python_model=CustomMLModel(),  # our spec-compliant wrapper

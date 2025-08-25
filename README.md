@@ -24,11 +24,22 @@ docker compose up -d
 
 Airflow API server should be running at [http://localhost:8080](http://localhost:8080).
 
+Ensure `airflow-apiserver`, `airflow-scheduler`, `mlflow`, `postgres`, `postgres-mlflow`, and `redis` are healthy:
 ```bash
 docker compose ps
 ```
 
-Ensure `airflow-apiserver`, `airflow-scheduler`, `mlflow`, `postgres`, `postgres-mlflow`, and `redis` are healthy.
+Verify Airflow DAGs:
+```bash
+# List DAGs
+docker compose exec -T airflow-scheduler airflow dags list
+
+# Trigger DAG manually
+docker compose exec -T airflow-scheduler airflow dags trigger ml_pipeline_dag
+
+# Check logs
+docker compose logs -f airflow-scheduler
+```
 
 ### 4. Verify MLflow
 
@@ -50,6 +61,39 @@ curl http://localhost:5000/api/2.0/mlflow/experiments/list
 * **Model Registry**: Automatically registers models if performance thresholds are met
 
 Access via browser: [http://localhost:5000](http://localhost:5000)
+
+---
+
+## Core DAG Design
+
+### Core Tasks
+
+- preprocess_data — Ingests raw data, adds abnormal lab flags, splits train/test, and synthesizes drifted copies.
+- feature_engineering — Builds numeric/derived features while keeping original columns.
+- train_model — Trains recall-oriented RF/LogReg, logs exactly 3 hyperparameters and model artifacts to MLflow.
+- evaluate_model — Loads the MLflow PyFunc model, evaluates accuracy + recall, and (if probs available) runs a threshold sweep.
+- drift_detection — Uses PythonOperator to run drift check on data/test.csv vs data/drifted_test.csv, writing to reports/drift_report.json.
+
+### Drift Detection Task
+- Implemented with PythonOperator (task_id="drift_detection")
+- Calls detect_drift("data/test.csv", "data/drifted_test.csv")
+- Reads reports/drift_report.json (overwritten each run)
+
+### Branching Logic
+- BranchPythonOperator (task_id="branch_on_drift")
+- Reads drift result from JSON file (not XCom)
+- If drift_detected=True ➜ branch to retrain_model
+- Else ➜ pipeline_complete
+
+### End Tasks
+- retrain_model — Re-runs the same training logic on original non-drifted data/train_fe.csv.
+- pipeline_complete — Simple terminal marker for the success path.
+
+### Dependencies
+```text
+preprocess_data >> feature_engineering >> train_model >> evaluate_model \
+>> drift_detection >> branch_on_drift >> [retrain_model, pipeline_complete]
+```
 
 ---
 
@@ -143,6 +187,49 @@ werkzeug < 3
 ---
 
 ## Testing Instructions
+
+### Smoke Test for Docker Compose
+
+Bring up the stack
+```bash
+docker compose up --build
+```
+
+Verify the DAG is present
+```bash
+docker compose exec -T airflow-scheduler airflow dags list
+```
+
+Trigger the DAG
+```bash
+docker compose exec -T airflow-scheduler airflow dags trigger ml_pipeline_dag
+```
+
+Test a single task
+```bash
+docker compose exec -T airflow-scheduler \
+  airflow tasks test ml_pipeline_dag preprocess_data 2025-08-25
+```
+
+Watch task logs
+```bash
+docker compose logs -f airflow-scheduler
+```
+
+Check artifacts & reports
+```bash
+# Evaluation metrics (accuracy, recall)
+cat reports/evaluation_results.json
+
+# Drift output (PSI & overall_drift_score)
+cat reports/drift_report.json
+
+# Threshold sweep (if evaluation had probs)
+cat reports/threshold_sweep.csv
+```
+
+Confirm MLflow runs & artifacts byt opening UI: http://localhost:5000
+You should see: runs under patient_experiments_v3, logged metrics, and the model artifact.
 
 ### Run end-to-end pipeline locally (no Airflow)
 

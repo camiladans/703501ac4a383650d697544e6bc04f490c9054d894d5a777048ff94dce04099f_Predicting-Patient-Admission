@@ -1,88 +1,171 @@
+# src/evaluation.py
 """
 Module: evaluation.py
 
-Evaluates a classification model on test data.
-Focuses on inpatient prediction ('IN') using recall and PR AUC.
+Evaluates a classification model and logs EXACTLY two metrics:
+  - accuracy
+  - recall
+
+Works with either:
+  A) evaluate_model(model, test_data_df_with_SOURCE, ...)
+  B) evaluate_model(model, X_test_df_or_ndarray, y_test_series_or_array, ...)
+
+Also logs both metrics to MLflow and saves to reports/evaluation_results.json
 """
 
-import pandas as pd
-import joblib
-import os
+from __future__ import annotations
 
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-    average_precision_score
-)
+import json
+import os
+from typing import Dict, Optional, Union, Iterable
+
+import numpy as np
+import pandas as pd
+import mlflow
+from sklearn.metrics import accuracy_score, recall_score
+from pandas.api.types import is_object_dtype, is_bool_dtype, is_numeric_dtype
+
+import joblib
+
+
+def _coerce_features_numeric(X: pd.DataFrame) -> pd.DataFrame:
+    """Best-effort numeric coercion without silently dropping columns."""
+    X = X.copy()
+
+    # Common categorical-to-numeric for 'SEX'
+    if "SEX" in X.columns and is_object_dtype(X["SEX"]):
+        X["SEX"] = (
+            X["SEX"]
+            .map({"M": 1, "F": 0, "Male": 1, "Female": 0, "m": 1, "f": 0})
+            .astype("float64")
+        )
+
+    # Booleans → int
+    bool_cols = [c for c in X.columns if is_bool_dtype(X[c])]
+    if bool_cols:
+        X[bool_cols] = X[bool_cols].astype("int8")
+
+    # Object columns → numeric (coerce)
+    obj_cols = [c for c in X.columns if is_object_dtype(X[c])]
+    for c in obj_cols:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
+
+    # Fill numeric NaNs with column medians
+    num_cols = [c for c in X.columns if is_numeric_dtype(X[c])]
+    for c in num_cols:
+        if X[c].isna().any():
+            X[c] = X[c].fillna(X[c].median())
+
+    return X
+
+
+def _encode_target(y: Union[pd.Series, np.ndarray, Iterable]) -> np.ndarray:
+    """Map labels to 0/1 with 'IN' as positive; accept strings or numeric."""
+    if isinstance(y, pd.Series):
+        arr = y.to_numpy()
+    else:
+        arr = np.asarray(y)
+
+    if arr.dtype.kind in {"U", "S", "O"}:
+        return np.array([1 if str(v).upper() == "IN" else 0 for v in arr], dtype=int)
+    # Numeric-like: treat 1 as positive, else 0
+    return np.array([1 if int(v) == 1 else 0 for v in arr], dtype=int)
+
+
+def _encode_pred(y_pred: Union[pd.Series, np.ndarray, Iterable]) -> np.ndarray:
+    """Mirror _encode_target for predictions that may be strings or ints."""
+    if isinstance(y_pred, pd.Series):
+        arr = y_pred.to_numpy()
+    else:
+        arr = np.asarray(y_pred)
+
+    if arr.dtype.kind in {"U", "S", "O"}:
+        return np.array([1 if str(v).upper() == "IN" else 0 for v in arr], dtype=int)
+    return np.array([1 if int(v) == 1 else 0 for v in arr], dtype=int)
+
+
+def _ensure_dataframe(
+    X: Union[pd.DataFrame, np.ndarray, Iterable], cols: Optional[list] = None
+) -> pd.DataFrame:
+    if isinstance(X, pd.DataFrame):
+        return X
+    return pd.DataFrame(X, columns=cols)
+
 
 def evaluate_model(
     model,
-    test_data: pd.DataFrame,
-    report_path: str = "reports/metrics.txt"
-):
+    test_or_X: Union[pd.DataFrame, np.ndarray],
+    y_test: Optional[Union[pd.Series, np.ndarray, Iterable]] = None,
+    report_path: str = "reports/evaluation_results.json",
+    *,
+    run_name: Optional[str] = "evaluation",
+    tracking_uri: Optional[str] = None,
+) -> Dict[str, float]:
     """
-    Evaluates model performance on test data and saves metrics.
-
-    Args:
-        model: Trained classifier.
-        test_data (pd.DataFrame): DataFrame with features and 'SOURCE' target.
-        report_path (str): Path to save metrics report.
+    Evaluate the classification model and write/log exactly two metrics.
 
     Returns:
-        dict: Dictionary with evaluation metrics.
+        dict: {'accuracy': float, 'recall': float}
     """
-    # Ensure output directory exists
-    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
 
-    if "SOURCE" not in test_data.columns:
-        raise KeyError("The column 'SOURCE' is missing from the input DataFrame.")
-
-    # Binary encode target: IN = 1 (inpatient), OUT = 0
-    y_test = test_data["SOURCE"].apply(lambda x: 1 if str(x).upper() == "IN" else 0)
-    X_test = test_data.drop(columns=["SOURCE"])
+    # Build X and y depending on the calling pattern
+    if y_test is None:
+        if not isinstance(test_or_X, pd.DataFrame) or "SOURCE" not in test_or_X.columns:
+            raise KeyError(
+                "When y_test is None, test_or_X must be a DataFrame containing 'SOURCE'."
+            )
+        df = test_or_X
+        y_true = _encode_target(df["SOURCE"])
+        X = df.drop(columns=["SOURCE"])
+    else:
+        X = _ensure_dataframe(test_or_X)
+        y_true = _encode_target(y_test)
 
     # Predictions
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
+    X_num = _coerce_features_numeric(X)
+    raw_pred = model.predict(X_num)
+    y_pred = _encode_pred(raw_pred).ravel()
 
-    # Metrics
-    acc = accuracy_score(y_test, y_pred)
-    prec = precision_score(y_test, y_pred)
-    rec = recall_score(y_test, y_pred)
-    cm = confusion_matrix(y_test, y_pred)
-    report = classification_report(y_test, y_pred, target_names=["OUT", "IN"])
+    if y_pred.shape[0] != y_true.shape[0]:
+        raise ValueError(
+            f"Prediction length {y_pred.shape[0]} != truth length {y_true.shape[0]}"
+        )
 
-    roc_auc = roc_auc_score(y_test, y_proba) if y_proba is not None else None
-    pr_auc = average_precision_score(y_test, y_proba) if y_proba is not None else None
-
-    # Save metrics to file
-    with open(report_path, "w") as f:
-        f.write(f"Accuracy: {acc:.4f}\n")
-        f.write(f"Precision: {prec:.4f}\n")
-        f.write(f"Recall: {rec:.4f}\n\n")
-        f.write("Classification Report:\n" + report + "\n")
-        f.write("Confusion Matrix:\n" + str(cm) + "\n")
-        if roc_auc:
-            f.write(f"ROC AUC: {roc_auc:.4f}\n")
-        if pr_auc:
-            f.write(f"PR AUC: {pr_auc:.4f}\n")
-
-    print(f"Metrics saved to: {report_path}")
-
-    return {
-        "accuracy": acc,
-        "precision": prec,
-        "recall": rec,
-        "confusion_matrix": cm,
-        "roc_auc": roc_auc,
-        "pr_auc": pr_auc
+    # TWO metrics
+    results = {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "recall": float(
+            recall_score(y_true, y_pred, average="binary", zero_division=0)
+        ),
     }
 
+    # Save to JSON (ensure directory exists)
+    report_dir = os.path.dirname(report_path)
+    if report_dir:
+        os.makedirs(report_dir, exist_ok=True)
+    with open(report_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved evaluation metrics to: {report_path}")
+
+    # Log exactly the same two metrics to MLflow
+    started_here = False
+    if mlflow.active_run() is None:
+        mlflow.start_run(run_name=run_name)
+        started_here = True
+    try:
+        mlflow.log_metric("accuracy", results["accuracy"])
+        mlflow.log_metric("recall", results["recall"])
+    finally:
+        if started_here:
+            mlflow.end_run()
+
+    return results
+
+
 def load_model(filepath: str = "models/model.pkl"):
+    """Load a model from disk (joblib)."""
     model = joblib.load(filepath)
     print(f"Model loaded from: {filepath}")
     return model

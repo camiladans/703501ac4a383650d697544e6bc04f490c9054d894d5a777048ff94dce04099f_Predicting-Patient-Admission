@@ -1,0 +1,32 @@
+artifact_path: mlflow-artifacts:/models/m-313c2b50bce74d29a0b6ed0ff38a2412/artifacts
+flavors:
+  python_function:
+    artifacts:
+      feature_names:
+        path: artifacts/feature_names.txt
+        uri: mlflow/artifacts/models_export/feature_names.txt
+      model:
+        path: artifacts/model.pkl
+        uri: mlflow/artifacts/models_export/model.pkl
+      preprocessor:
+        path: artifacts/preprocessor.pkl
+        uri: mlflow/artifacts/models_export/preprocessor.pkl
+      threshold:
+        path: artifacts/threshold.txt
+        uri: mlflow/artifacts/models_export/threshold.txt
+    cloudpickle_version: 3.1.1
+    code: null
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.12.11
+    streamable: false
+mlflow_version: 3.1.4
+model_id: m-313c2b50bce74d29a0b6ed0ff38a2412
+model_size_bytes: 14298134
+model_uuid: m-313c2b50bce74d29a0b6ed0ff38a2412
+prompts: null
+run_id: 9b1981c899254ae7983e5a720ac90789
+utc_time_created: '2025-08-25 09:52:48.372383'

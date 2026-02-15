@@ -1,130 +1,182 @@
-"""
-Module: feature_engineering.py
-
-This module handles feature transformations including:
-- Scaling numeric features
-- Polynomial feature expansion on numeric data
-- Low-variance feature removal
-- Encoding categorical features
-Preserves 'SOURCE' column if present.
-"""
-
+# src/feature_engineering.py
+from __future__ import annotations
+from pathlib import Path
+from typing import Dict, Any, Optional
+import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler #PolynomialFeatures
-# from sklearn.feature_selection import VarianceThreshold
 
-def scale_features(df: pd.DataFrame) -> pd.DataFrame:
+"""
+Feature Engineering for Patient Admission Labs.
+
+Adds numeric, model-friendly derived features on top of the preprocessed dataset.
+- Does NOT modify or drop the target column (default: 'SOURCE')
+- Keeps original columns; adds new ones (all numeric/bool→int8)
+- only computes features when inputs exist
+
+New feature columns, if inputs exist
+-------------------------------------------
+- AGE_BIN (0..3), is_senior
+- SEX_M (1 if M else 0)
+- EST_HCT_FROM_RBC_MCV, DELTA_HCT
+- EST_MCHC_FROM_HB_HCT, DELTA_MCHC
+- MCH_over_MCV, RBC_over_HB, WBC_over_RBC, PLT_over_WBC, MCHC_times_MCV
+- abnormal_lab_count and all is_* flags cast to int8
+
+Usage from code:
+    from src.feature_engineering import run_feature_engineering
+    run_feature_engineering("data/train.csv", "data/test.csv")
+
+Outputs:
+    data/train_fe.csv
+    data/test_fe.csv
+"""
+
+DATA_DIR = Path("data")
+
+
+def _safe_div(a: pd.Series, b: pd.Series) -> pd.Series:
+    """Elementwise safe division returning float; handles 0 and NaNs."""
+    a = pd.to_numeric(a, errors="coerce")
+    b = pd.to_numeric(b, errors="coerce")
+    out = a.astype("float64") / b.replace(0, np.nan).astype("float64")
+    return out.replace([np.inf, -np.inf], np.nan)
+
+
+def _to_float(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").astype("float64", copy=False)
+
+
+def _add_if_exists(df: pd.DataFrame, name: str, func) -> None:
+    """Compute df[name] = func(df) if func’s required columns exist; else no-op."""
+    try:
+        df[name] = func(df)
+    except KeyError:
+        # one or more required columns missing; skip
+        pass
+
+
+def build_features(df: pd.DataFrame, *, target_col: str = "SOURCE") -> pd.DataFrame:
     """
-    Standardizes only the numeric features to zero mean and unit variance.
-
-    Args:
-        df (pd.DataFrame): Input DataFrame.
-
-    Returns:
-        pd.DataFrame: DataFrame with numeric columns scaled, others unchanged.
+    Add engineered features on top of an already preprocessed frame.
+    Assumes your preprocessing has already created is_* flags where applicable.
     """
-    df = df.copy()
-    source = df.pop("SOURCE") if "SOURCE" in df.columns else None
+    out = df.copy()
 
-    numeric_cols = df.select_dtypes(include="number").columns
-    non_numeric_cols = df.columns.difference(numeric_cols)
+    # --- Age features ---
+    if "AGE" in out.columns:
+        # Integer codes for bins: (-inf,18], (18,40], (40,65], (65,inf)
+        age_bins = pd.cut(
+            _to_float(out["AGE"]),
+            bins=[-np.inf, 18, 40, 65, np.inf],
+            labels=[0, 1, 2, 3],
+            right=True,
+            include_lowest=True,
+        )
+        out["AGE_BIN"] = age_bins.astype("float64")
+        out["is_senior"] = (_to_float(out["AGE"]) >= 65).astype("int8")
 
-    scaler = StandardScaler()
-    scaled_array = scaler.fit_transform(df[numeric_cols])
-    df_scaled = pd.DataFrame(scaled_array, columns=numeric_cols, index=df.index)
+    # --- Sex convenience numeric ---
+    if "SEX" in out.columns:
+        out["SEX_M"] = (out["SEX"].astype(str).str.upper().eq("M")).astype("int8")
 
-    df_out = pd.concat([df_scaled, df[non_numeric_cols]], axis=1)
-    df_out = df_out[df.columns]  # preserve original column order
+    # --- RBC index: estimated hematocrit from RBC & MCV (≈ RBC * MCV / 10) ---
+    def _est_hct(d: pd.DataFrame) -> pd.Series:
+        return _to_float(d["ERYTHROCYTE"]) * _to_float(d["MCV"]) / 10.0
 
-    if source is not None:
-        df_out["SOURCE"] = source
+    _add_if_exists(out, "EST_HCT_FROM_RBC_MCV", _est_hct)
 
-    return df_out
+    # Delta between measured and estimated hematocrit
+    def _delta_hct(d: pd.DataFrame) -> pd.Series:
+        return _to_float(d["HAEMATOCRIT"]) - (
+            _to_float(d["ERYTHROCYTE"]) * _to_float(d["MCV"]) / 10.0
+        )
 
-# def add_polynomial_features(df: pd.DataFrame, degree=2) -> pd.DataFrame:
-#     """
-#     Generates polynomial features up to the specified degree on numeric columns only.
+    _add_if_exists(out, "DELTA_HCT", _delta_hct)
 
-#     Args:
-#         df (pd.DataFrame): DataFrame that may contain both numeric and non-numeric features.
-#         degree (int): Maximum degree of polynomial features to generate.
+    # --- Estimated MCHC from Hb & Hct: MCHC_est ≈ (Hb * 100) / Hct ---
+    def _est_mchc(d: pd.DataFrame) -> pd.Series:
+        return _safe_div(
+            _to_float(d["HAEMOGLOBINS"]) * 100.0, _to_float(d["HAEMATOCRIT"])
+        )
 
-#     Returns:
-#         pd.DataFrame: DataFrame with polynomial features and non-numeric columns preserved.
-#     """
-#     df = df.copy()
-#     source = df.pop("SOURCE") if "SOURCE" in df.columns else None
+    _add_if_exists(out, "EST_MCHC_FROM_HB_HCT", _est_mchc)
 
-#     numeric_cols = df.select_dtypes(include="number").columns
-#     non_numeric_cols = df.columns.difference(numeric_cols)
+    def _delta_mchc(d: pd.DataFrame) -> pd.Series:
+        return _to_float(d["MCHC"]) - _safe_div(
+            _to_float(d["HAEMOGLOBINS"]) * 100.0, _to_float(d["HAEMATOCRIT"])
+        )
 
-#     poly = PolynomialFeatures(degree=degree, include_bias=False)
-#     poly_array = poly.fit_transform(df[numeric_cols])
-#     poly_df = pd.DataFrame(poly_array, columns=poly.get_feature_names_out(numeric_cols), index=df.index)
+    _add_if_exists(out, "DELTA_MCHC", _delta_mchc)
 
-#     df_out = pd.concat([poly_df, df[non_numeric_cols]], axis=1)
-#     if source is not None:
-#         df_out["SOURCE"] = source
+    # --- Ratios / interactions ---
+    def _mch_over_mcv(d: pd.DataFrame) -> pd.Series:
+        return _safe_div(_to_float(d["MCH"]), _to_float(d["MCV"]))
 
-#     return df_out
+    _add_if_exists(out, "MCH_over_MCV", _mch_over_mcv)
 
-# def remove_low_variance_features(df: pd.DataFrame, threshold=0.01) -> pd.DataFrame:
-#     """
-#     Removes features with variance below the specified threshold, applied only to numeric columns.
+    def _rbc_over_hb(d: pd.DataFrame) -> pd.Series:
+        return _safe_div(_to_float(d["ERYTHROCYTE"]), _to_float(d["HAEMOGLOBINS"]))
 
-#     Args:
-#         df (pd.DataFrame): DataFrame with features.
-#         threshold (float): Minimum variance required to retain a feature.
+    _add_if_exists(out, "RBC_over_HB", _rbc_over_hb)
 
-#     Returns:
-#         pd.DataFrame: DataFrame with low-variance numeric features removed, non-numeric features preserved.
-#     """
-#     df = df.copy()
-#     source = df.pop("SOURCE") if "SOURCE" in df.columns else None
+    def _wbc_over_rbc(d: pd.DataFrame) -> pd.Series:
+        return _safe_div(_to_float(d["LEUCOCYTE"]), _to_float(d["ERYTHROCYTE"]))
 
-#     numeric_cols = df.select_dtypes(include="number").columns
-#     non_numeric_cols = df.columns.difference(numeric_cols)
+    _add_if_exists(out, "WBC_over_RBC", _wbc_over_rbc)
 
-#     selector = VarianceThreshold(threshold=threshold)
-#     reduced_array = selector.fit_transform(df[numeric_cols])
-#     selected_columns = numeric_cols[selector.get_support()]
+    def _plt_over_wbc(d: pd.DataFrame) -> pd.Series:
+        return _safe_div(_to_float(d["THROMBOCYTE"]), _to_float(d["LEUCOCYTE"]))
 
-#     reduced_df = pd.DataFrame(reduced_array, columns=selected_columns, index=df.index)
-#     df_out = pd.concat([reduced_df, df[non_numeric_cols]], axis=1)
+    _add_if_exists(out, "PLT_over_WBC", _plt_over_wbc)
 
-#     if source is not None:
-#         df_out["SOURCE"] = source
+    def _mchc_times_mcv(d: pd.DataFrame) -> pd.Series:
+        return _to_float(d["MCHC"]) * _to_float(d["MCV"])
 
-#     return df_out
+    _add_if_exists(out, "MCHC_times_MCV", _mchc_times_mcv)
 
-def encode_categorical_features(df: pd.DataFrame) -> pd.DataFrame:
+    # --- Abnormal flags summary ---
+    flag_cols = [
+        "is_hct_normal",
+        "is_hb_normal",
+        "is_rbc_normal",
+        "is_wbc_normal",
+        "is_plt_normal",
+        "is_mch_normal",
+        "is_mchc_normal",
+        "is_mcv_normal",
+    ]
+    present_flags = [c for c in flag_cols if c in out.columns]
+    if present_flags:
+        flags_numeric = (~out[present_flags].astype(bool)).astype("int8")
+        out["abnormal_lab_count"] = flags_numeric.sum(axis=1).astype("int16")
+        out[present_flags] = out[present_flags].astype("int8")
+
+    return out
+
+
+def run_feature_engineering(
+    train_csv: str,
+    test_csv: str,
+    *,
+    out_train_fe: Optional[str] = None,
+    out_test_fe: Optional[str] = None,
+    target_col: str = "SOURCE",
+) -> Dict[str, Any]:
     """
-    Encodes 'SEX' column using one-hot encoding. Ignores other categorical columns.
-
-    Args:
-        df (pd.DataFrame): DataFrame with numerical and categorical features.
-
-    Returns:
-        pd.DataFrame: DataFrame with 'SEX' encoded, all others unchanged.
+    Read train/test CSVs, build features, and write train_fe.csv / test_fe.csv.
+    Returns dict with output paths.
     """
-    df = df.copy()
-    if "SEX" in df.columns:
-        df = pd.get_dummies(df, columns=["SEX"], drop_first=True)
-    return df
+    out_train_fe = out_train_fe or str(DATA_DIR / "train_fe.csv")
+    out_test_fe = out_test_fe or str(DATA_DIR / "test_fe.csv")
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Applies full feature engineering pipeline: scaling, polynomial features,
-    low-variance feature removal, and categorical encoding.
+    df_train = pd.read_csv(train_csv)
+    df_test = pd.read_csv(test_csv)
 
-    Args:
-        df (pd.DataFrame): Raw DataFrame with numerical and categorical features.
+    df_train_fe = build_features(df_train, target_col=target_col)
+    df_test_fe = build_features(df_test, target_col=target_col)
 
-    Returns:
-        pd.DataFrame: Fully numeric engineered feature set.
-    """
-    df_scaled = scale_features(df)
-    # df_poly = add_polynomial_features(df_scaled)
-    # df_reduced = remove_low_variance_features(df_poly)
-    df_encoded = encode_categorical_features(df_scaled)
-    return df_encoded
+    Path(out_train_fe).parent.mkdir(parents=True, exist_ok=True)
+    df_train_fe.to_csv(out_train_fe, index=False)
+    df_test_fe.to_csv(out_test_fe, index=False)
+
+    return {"train_fe": out_train_fe, "test_fe": out_test_fe}

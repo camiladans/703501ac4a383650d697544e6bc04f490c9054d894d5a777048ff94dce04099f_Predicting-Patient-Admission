@@ -1,0 +1,25 @@
+{
+  "drift_detected": false,
+  "overall_drift_score": 0.11764705882352941,
+  "selected_features": [
+    "HAEMATOCRIT",
+    "HAEMOGLOBINS",
+    "ERYTHROCYTE",
+    "LEUCOCYTE",
+    "THROMBOCYTE",
+    "MCH",
+    "MCHC",
+    "MCV",
+    "AGE",
+    "is_hct_normal",
+    "is_hb_normal",
+    "is_rbc_normal",
+    "is_wbc_normal",
+    "is_plt_normal",
+    "is_mch_normal",
+    "is_mchc_normal",
+    "is_mcv_normal"
+  ],
+  "raw_report": null,
+  "method": "psi_fallback"
+}
